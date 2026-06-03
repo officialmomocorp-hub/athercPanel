@@ -600,6 +600,91 @@ php_value[max_input_vars] = %s
 	return executeShell("systemctl", "reload", fmt.Sprintf("php%s-fpm", phpVer))
 }
 
+type BackupConfig struct {
+	Enabled            bool   `json:"enabled"`
+	FolderID           string `json:"folder_id"`
+	ServiceAccountJSON string `json:"service_account_json"`
+}
+
+type BackupLog struct {
+	Timestamp string `json:"timestamp"`
+	Status    string `json:"status"` // "success", "failed"
+	Message   string `json:"message"`
+}
+
+var backupConfigMutex sync.RWMutex
+
+func loadBackupConfig() BackupConfig {
+	backupConfigMutex.RLock()
+	defer backupConfigMutex.RUnlock()
+
+	filePath := "/opt/aether-panel/backup_config.json"
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return BackupConfig{Enabled: false}
+	}
+	var cfg BackupConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return BackupConfig{Enabled: false}
+	}
+	return cfg
+}
+
+func saveBackupConfig(cfg BackupConfig) error {
+	backupConfigMutex.Lock()
+	defer backupConfigMutex.Unlock()
+
+	filePath := "/opt/aether-panel/backup_config.json"
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, data, 0600)
+}
+
+func loadBackupLogs() []BackupLog {
+	backupConfigMutex.RLock()
+	defer backupConfigMutex.RUnlock()
+
+	filePath := "/opt/aether-panel/backup_logs.json"
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return []BackupLog{}
+	}
+	var logs []BackupLog
+	if err := json.Unmarshal(data, &logs); err != nil {
+		return []BackupLog{}
+	}
+	return logs
+}
+
+func addBackupLog(status, message string) {
+	backupConfigMutex.Lock()
+	defer backupConfigMutex.Unlock()
+
+	logsFile := "/opt/aether-panel/backup_logs.json"
+	var logs []BackupLog
+	if data, err := os.ReadFile(logsFile); err == nil {
+		_ = json.Unmarshal(data, &logs)
+	}
+
+	newLog := BackupLog{
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		Status:    status,
+		Message:   message,
+	}
+
+	logs = append([]BackupLog{newLog}, logs...)
+	if len(logs) > 50 {
+		logs = logs[:50]
+	}
+
+	data, err := json.MarshalIndent(logs, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(logsFile, data, 0644)
+	}
+}
+
 // --- NEW CPANEL FEATURE HANDLERS AND HELPERS ---
 
 type CronJob struct {
@@ -1569,6 +1654,124 @@ func handlePMASession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleGetBackupConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := loadBackupConfig()
+	hasKey := cfg.ServiceAccountJSON != ""
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"enabled":   cfg.Enabled,
+		"folder_id": cfg.FolderID,
+		"has_key":   hasKey,
+	})
+}
+
+func handleSaveBackupConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req BackupConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.ServiceAccountJSON != "" {
+		var testMap map[string]interface{}
+		if err := json.Unmarshal([]byte(req.ServiceAccountJSON), &testMap); err != nil {
+			http.Error(w, "Invalid Service Account JSON key format", http.StatusBadRequest)
+			return
+		}
+	} else {
+		existing := loadBackupConfig()
+		req.ServiceAccountJSON = existing.ServiceAccountJSON
+	}
+
+	if err := saveBackupConfig(req); err != nil {
+		http.Error(w, "Failed to save backup config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+func handleRunBackup(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	backupMutex.Lock()
+	if backupRunning {
+		backupMutex.Unlock()
+		http.Error(w, "Backup is already running", http.StatusConflict)
+		return
+	}
+	backupMutex.Unlock()
+
+	go runGDriveBackup()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "processing", "message": "Backup triggered in background"})
+}
+
+func handleGetBackupStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	backupMutex.Lock()
+	running := backupRunning
+	status := backupStatusMsg
+	backupMutex.Unlock()
+
+	logs := loadBackupLogs()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"running": running,
+		"status":  status,
+		"logs":    logs,
+	})
+}
+
 func handleGetPHPSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -1694,6 +1897,15 @@ func main() {
 	mux.HandleFunc("/api/auth/login", handleLogin)
 	mux.HandleFunc("/api/php/ini", authMiddleware(handleGetPHPSettings))
 	mux.HandleFunc("/api/php/ini/save", authMiddleware(handleSavePHPSettings))
+	mux.HandleFunc("/api/backup/config", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handleSaveBackupConfig(w, r)
+		} else {
+			handleGetBackupConfig(w, r)
+		}
+	}))
+	mux.HandleFunc("/api/backup/run", authMiddleware(handleRunBackup))
+	mux.HandleFunc("/api/backup/status", authMiddleware(handleGetBackupStatus))
 	
 	// Protected administrative endpoints
 	mux.HandleFunc("/api/migrate", authMiddleware(handleMigrate))
@@ -2100,11 +2312,148 @@ func startSSLAutoRenewalWorker() {
 	}
 }
 
+var (
+	backupMutex     sync.Mutex
+	backupRunning   bool
+	backupStatusMsg string = "Idle"
+)
+
+func runGDriveBackup() {
+	backupMutex.Lock()
+	if backupRunning {
+		backupMutex.Unlock()
+		return
+	}
+	backupRunning = true
+	backupStatusMsg = "Initializing backup process..."
+	backupMutex.Unlock()
+
+	defer func() {
+		backupMutex.Lock()
+		backupRunning = false
+		backupMutex.Unlock()
+	}()
+
+	cfg := loadBackupConfig()
+	if !cfg.Enabled {
+		addBackupLog("failed", "Backup skipped: engine is disabled in configuration")
+		backupMutex.Lock()
+		backupStatusMsg = "Disabled"
+		backupMutex.Unlock()
+		return
+	}
+	if cfg.FolderID == "" || cfg.ServiceAccountJSON == "" {
+		addBackupLog("failed", "Backup failed: missing Folder ID or Service Account key")
+		backupMutex.Lock()
+		backupStatusMsg = "Misconfigured"
+		backupMutex.Unlock()
+		return
+	}
+
+	tempDir := "/tmp/aether_backup"
+	_ = os.RemoveAll(tempDir)
+	_ = os.MkdirAll(tempDir, 0700)
+	defer os.RemoveAll(tempDir)
+
+	timestamp := time.Now().Format("20060102_150405")
+
+	// 1. Dump MySQL Databases
+	backupMutex.Lock()
+	backupStatusMsg = "Dumping MySQL databases..."
+	backupMutex.Unlock()
+
+	cmd := exec.Command("mysql", "-u", "root", "-e", "SHOW DATABASES;")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		dbNames := strings.Split(out.String(), "\n")
+		for _, db := range dbNames {
+			db = strings.TrimSpace(db)
+			if db == "" || db == "Database" || db == "information_schema" || db == "performance_schema" || db == "mysql" || db == "sys" {
+				continue
+			}
+			dbFile := filepath.Join(tempDir, fmt.Sprintf("db_%s_%s.sql", db, timestamp))
+			
+			dumpCmd := exec.Command("mysqldump", "-u", "root", db)
+			var dbDump bytes.Buffer
+			dumpCmd.Stdout = &dbDump
+			if err := dumpCmd.Run(); err == nil {
+				_ = os.WriteFile(dbFile, dbDump.Bytes(), 0600)
+				_ = executeShell("gzip", dbFile)
+			}
+		}
+	}
+
+	// 2. Compress website files
+	backupMutex.Lock()
+	backupStatusMsg = "Compressing website files..."
+	backupMutex.Unlock()
+
+	sites := loadSites()
+	for _, site := range sites {
+		siteDir := fmt.Sprintf("/var/www/vhosts/%s", site.Domain)
+		if _, err := os.Stat(siteDir); err == nil {
+			archiveFile := filepath.Join(tempDir, fmt.Sprintf("site_%s_%s.tar.gz", site.Domain, timestamp))
+			_ = executeShell("tar", "-czf", archiveFile, "-C", "/var/www/vhosts", site.Domain)
+		}
+	}
+
+	// 3. Compress panel configurations
+	backupMutex.Lock()
+	backupStatusMsg = "Compressing panel configurations..."
+	backupMutex.Unlock()
+
+	panelConfigArchive := filepath.Join(tempDir, fmt.Sprintf("panel_configs_%s.tar.gz", timestamp))
+	_ = executeShell("tar", "-czf", panelConfigArchive, "-C", "/opt/aether-panel", ".")
+
+	// 4. Configure rclone temporary storage
+	backupMutex.Lock()
+	backupStatusMsg = "Configuring temporary credentials..."
+	backupMutex.Unlock()
+
+	serviceAccountPath := "/tmp/backup_service_account.json"
+	_ = os.WriteFile(serviceAccountPath, []byte(cfg.ServiceAccountJSON), 0600)
+	defer os.Remove(serviceAccountPath)
+
+	rcloneConfig := fmt.Sprintf(`[gdrive]
+type = drive
+service_account_file = %s
+root_folder_id = %s
+`, serviceAccountPath, cfg.FolderID)
+
+	rcloneConfigPath := "/tmp/rclone_backup.conf"
+	_ = os.WriteFile(rcloneConfigPath, []byte(rcloneConfig), 0600)
+	defer os.Remove(rcloneConfigPath)
+
+	// 5. Upload via rclone
+	backupMutex.Lock()
+	backupStatusMsg = "Uploading archives to Google Drive..."
+	backupMutex.Unlock()
+
+	err := executeShell("rclone", "copy", tempDir, "gdrive:/", "--config", rcloneConfigPath)
+	if err != nil {
+		addBackupLog("failed", "Google Drive upload failed: "+err.Error())
+		backupMutex.Lock()
+		backupStatusMsg = "Failed"
+		backupMutex.Unlock()
+		return
+	}
+
+	addBackupLog("success", fmt.Sprintf("Daily backup completed successfully. Uploaded %d site(s), databases and panel configs.", len(sites)))
+	backupMutex.Lock()
+	backupStatusMsg = "Completed"
+	backupMutex.Unlock()
+}
+
 // Background worker managing zipped database/website uploads to Google Drive.
 func startGDriveBackupWorker() {
-	ticker := time.NewTicker(12 * time.Hour)
+	ticker := time.NewTicker(1 * time.Hour)
 	for range ticker.C {
-		log.Println("[Backup Worker] Compressing sites and streaming encryption pipelines to GDrive")
+		now := time.Now()
+		if now.Hour() == 2 {
+			log.Println("[Backup Worker] Triggering scheduled daily backup...")
+			go runGDriveBackup()
+		}
 	}
 }
 

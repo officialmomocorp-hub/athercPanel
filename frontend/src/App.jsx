@@ -118,6 +118,17 @@ export default function App() {
   const [iniLoading, setIniLoading] = useState(false);
   const [iniSaving, setIniSaving] = useState(false);
 
+  // Google Drive Backup state
+  const [backupFolderId, setBackupFolderId] = useState('');
+  const [backupServiceAccountKey, setBackupServiceAccountKey] = useState('');
+  const [backupEnabled, setBackupEnabled] = useState(false);
+  const [backupLogs, setBackupLogs] = useState([]);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupStatus, setBackupStatus] = useState('Idle');
+  const [backupConfigLoading, setBackupConfigLoading] = useState(false);
+  const [backupConfigSaving, setBackupConfigSaving] = useState(false);
+  const [backupKeyConfigured, setBackupKeyConfigured] = useState(false);
+
   const toggleCategoryCollapse = (catId) => {
     setCollapsedCategories(prev => ({
       ...prev,
@@ -627,6 +638,97 @@ export default function App() {
       setTerminalCmd(newIdx >= 0 ? terminalCmdHistory[newIdx] : '');
     }
   };
+
+  // ===== Google Drive Backup handlers =====
+  const fetchBackupConfig = async () => {
+    setBackupConfigLoading(true);
+    try {
+      const res = await apiFetch('/api/backup/config');
+      if (res && res.ok) {
+        const data = await res.json();
+        setBackupEnabled(data.enabled);
+        setBackupFolderId(data.folder_id);
+        setBackupKeyConfigured(data.has_key);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setBackupConfigLoading(false);
+  };
+
+  const fetchBackupStatus = async () => {
+    try {
+      const res = await apiFetch('/api/backup/status');
+      if (res && res.ok) {
+        const data = await res.json();
+        setBackupRunning(data.running);
+        setBackupStatus(data.status);
+        setBackupLogs(data.logs || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSaveBackupConfig = async (e) => {
+    e.preventDefault();
+    setBackupConfigSaving(true);
+    try {
+      const res = await apiFetch('/api/backup/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          enabled: backupEnabled,
+          folder_id: backupFolderId,
+          service_account_json: backupServiceAccountKey
+        })
+      });
+      if (res && res.ok) {
+        alert("Backup configuration saved successfully!");
+        setBackupServiceAccountKey('');
+        await fetchBackupConfig();
+      } else {
+        const msg = await res.text();
+        alert("Failed to save config: " + msg);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to connect to panel API");
+    }
+    setBackupConfigSaving(false);
+  };
+
+  const handleTriggerBackup = async () => {
+    try {
+      const res = await apiFetch('/api/backup/run', { method: 'POST' });
+      if (res && res.ok) {
+        setBackupRunning(true);
+        setBackupStatus("Initializing backup process...");
+        fetchBackupStatus();
+      } else {
+        const msg = await res.text();
+        alert("Failed to start backup: " + msg);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  useEffect(() => {
+    if (gdriveConnected) {
+      fetchBackupConfig();
+      fetchBackupStatus();
+    }
+  }, [gdriveConnected]);
+
+  useEffect(() => {
+    let interval;
+    if (gdriveConnected && backupRunning) {
+      interval = setInterval(() => {
+        fetchBackupStatus();
+      }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [gdriveConnected, backupRunning]);
 
   // ===== Cron handlers =====
   const fetchCronJobs = async () => {
@@ -2186,50 +2288,121 @@ export default function App() {
       {/* Google Drive / Backups Connected State Modal */}
       {gdriveConnected && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-6">
-          <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-8 shadow-2xl relative">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button onClick={() => setGdriveConnected(false)} className="absolute top-6 right-6 text-slate-400 hover:text-slate-700 text-sm font-bold">X</button>
             <h2 className="text-xl font-bold text-slate-800 mb-1.5">Backup Engine Options</h2>
             <p className="text-xs text-slate-500 mb-6 font-medium">Encrypt and push compressed virtual host directories and SQL dumps directly to offsite Google Drive storage.</p>
             
-            <div className="space-y-4">
-              <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs">
-                <span className="font-bold text-slate-600">Auth Method</span>
-                <div className="flex bg-slate-200 p-0.5 rounded-lg border border-slate-300">
-                  <button
-                    onClick={() => setGdriveMode('oauth')}
-                    className={`px-2 py-1 text-[9px] font-black rounded uppercase tracking-wider ${gdriveMode === 'oauth' ? 'bg-orange-600 text-white' : 'text-slate-500'}`}
-                  >
-                    OAuth2
-                  </button>
-                  <button
-                    onClick={() => setGdriveMode('service_account')}
-                    className={`px-2 py-1 text-[9px] font-black rounded uppercase tracking-wider ${gdriveMode === 'service_account' ? 'bg-orange-600 text-white' : 'text-slate-500'}`}
-                  >
-                    Service JSON
-                  </button>
+            {backupConfigLoading ? (
+              <p className="text-center text-xs text-slate-500 py-6">Loading configuration...</p>
+            ) : (
+              <div className="space-y-6">
+                {/* Configuration Form */}
+                <form onSubmit={handleSaveBackupConfig} className="space-y-4 border-b border-slate-200 pb-6">
+                  <div className="flex items-center justify-between text-xs">
+                    <div>
+                      <span className="font-bold text-slate-700 block">Daily Automated Backup</span>
+                      <span className="text-[10px] text-slate-400">Triggers every night at 2:00 AM server time</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setBackupEnabled(!backupEnabled)}
+                      className={`w-10 h-5 rounded-full transition-colors relative border ${backupEnabled ? 'bg-orange-600 border-orange-600' : 'bg-slate-200 border-slate-300'}`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 bg-white w-3.5 h-3.5 rounded-full transition-transform ${backupEnabled ? 'translate-x-5' : ''}`} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Google Drive Folder ID</label>
+                    <input
+                      required
+                      type="text"
+                      value={backupFolderId}
+                      onChange={e => setBackupFolderId(e.target.value)}
+                      placeholder="Folder ID from your Google Drive URL"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-orange-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">
+                      Service Account JSON Key
+                    </label>
+                    <textarea
+                      value={backupServiceAccountKey}
+                      onChange={e => setBackupServiceAccountKey(e.target.value)}
+                      placeholder={backupKeyConfigured ? "Service Account Key is configured. Paste new JSON to overwrite." : "Paste contents of your Google Service Account credentials .json file here..."}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-orange-500 h-24 font-mono resize-none"
+                    />
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={backupConfigSaving}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-200 text-white rounded-lg text-xs font-semibold transition"
+                    >
+                      {backupConfigSaving ? 'Saving Settings...' : 'Save Settings'}
+                    </button>
+                  </div>
+                </form>
+
+                {/* Instant Trigger & Live Status */}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
+                  <div className="flex items-center justify-between text-xs">
+                    <div>
+                      <span className="font-bold text-slate-700 block">Backup Status</span>
+                      <span className="text-[10px] text-slate-500 font-mono mt-0.5 block">{backupStatus}</span>
+                    </div>
+                    <button
+                      onClick={handleTriggerBackup}
+                      disabled={backupRunning}
+                      className="px-4 py-2 bg-orange-600 hover:bg-orange-500 disabled:bg-slate-300 text-white rounded-lg text-xs font-semibold transition flex items-center space-x-1.5"
+                    >
+                      {backupRunning ? (
+                        <>
+                          <svg className="animate-spin h-3 w-3 text-white" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          <span>Backing up...</span>
+                        </>
+                      ) : (
+                        <span>Run Backup Now</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Backup Log History */}
+                <div className="space-y-2">
+                  <h4 className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Backup Log History</h4>
+                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-36 overflow-y-auto">
+                    {backupLogs.length === 0 ? (
+                      <p className="text-center text-xs text-slate-400 py-6 bg-slate-50">No backup records found.</p>
+                    ) : (
+                      <div className="divide-y divide-slate-100">
+                        {backupLogs.map((log, index) => (
+                          <div key={index} className="p-3 bg-slate-50 flex items-start justify-between text-[11px] font-mono leading-relaxed">
+                            <div className="space-y-1 pr-4">
+                              <span className="text-slate-400 block text-[9px]">{log.timestamp}</span>
+                              <span className="text-slate-600 block">{log.message}</span>
+                            </div>
+                            <span className={`px-2 py-0.5 text-[9px] rounded font-bold uppercase ${log.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                              {log.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
+            )}
 
-              {gdriveMode === 'oauth' ? (
-                <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs">
-                  <span className="font-bold text-slate-600">Engine Status</span>
-                  <button
-                    onClick={triggerGDriveOAuth}
-                    className="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-lg text-[10px] font-bold text-white transition"
-                  >
-                    Authenticate OAuth2
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2 bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs">
-                  <label className="text-[10px] text-slate-400 block font-bold uppercase tracking-wider">Service Account JSON file</label>
-                  <input type="file" className="block w-full text-xs text-slate-500 file:mr-4 file:py-1 file:px-3 file:rounded file:border file:border-slate-300 file:text-[10px] file:font-semibold file:bg-white file:text-slate-600 hover:file:bg-slate-100" />
-                </div>
-              )}
-
-              <div className="flex justify-end pt-4 border-t border-slate-200">
-                <button onClick={() => setGdriveConnected(false)} className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold text-xs rounded-lg transition">Close</button>
-              </div>
+            <div className="flex justify-end pt-4 border-t border-slate-200 mt-6">
+              <button onClick={() => setGdriveConnected(false)} className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold text-xs rounded-lg transition">Close</button>
             </div>
           </div>
         </div>
