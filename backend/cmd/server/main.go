@@ -401,19 +401,6 @@ func handleUpdatePHP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	phpPoolConfig := fmt.Sprintf(`[%s]
-user = %s
-group = %s
-listen = /run/php/php%s-fpm-%s.sock
-listen.owner = www-data
-listen.group = www-data
-pm = dynamic
-pm.max_children = 5
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 3
-`, body.Domain, body.Domain, body.Domain, body.Version, body.Domain)
-
 	list := loadSites()
 	var oldVersion string
 	for _, s := range list {
@@ -427,9 +414,11 @@ pm.max_spare_servers = 3
 		_ = executeShell("systemctl", "reload", fmt.Sprintf("php%s-fpm", oldVersion))
 	}
 	
-	poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", body.Version, body.Domain)
-	_ = os.WriteFile(poolPath, []byte(phpPoolConfig), 0644)
-	_ = executeShell("systemctl", "reload", fmt.Sprintf("php%s-fpm", body.Version))
+	err := rebuildPHPPool(body.Domain, body.Version)
+	if err != nil {
+		http.Error(w, "Failed to rebuild PHP pool: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	
 	for i, s := range list {
 		if s.Domain == body.Domain {
@@ -525,6 +514,90 @@ func handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+type PHPDomainSettings struct {
+	MemoryLimit       string `json:"memory_limit"`
+	UploadMaxFilesize string `json:"upload_max_filesize"`
+	PostMaxSize       string `json:"post_max_size"`
+	MaxExecutionTime  string `json:"max_execution_time"`
+	MaxInputVars      string `json:"max_input_vars"`
+}
+
+var phpSettingsMutex sync.RWMutex
+
+func loadPHPSettings() map[string]PHPDomainSettings {
+	phpSettingsMutex.RLock()
+	defer phpSettingsMutex.RUnlock()
+
+	filePath := "/opt/aether-panel/php_settings.json"
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return make(map[string]PHPDomainSettings)
+	}
+	var settings map[string]PHPDomainSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return make(map[string]PHPDomainSettings)
+	}
+	return settings
+}
+
+func savePHPSettings(settings map[string]PHPDomainSettings) error {
+	phpSettingsMutex.Lock()
+	defer phpSettingsMutex.Unlock()
+
+	filePath := "/opt/aether-panel/php_settings.json"
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, data, 0644)
+}
+
+func rebuildPHPPool(domain string, phpVer string) error {
+	settingsMap := loadPHPSettings()
+	settings, exists := settingsMap[domain]
+	if !exists {
+		settings = PHPDomainSettings{
+			MemoryLimit:       "128M",
+			UploadMaxFilesize: "64M",
+			PostMaxSize:       "64M",
+			MaxExecutionTime:  "120",
+			MaxInputVars:      "1000",
+		}
+	}
+
+	phpPoolConfig := fmt.Sprintf(`[%s]
+user = %s
+group = %s
+listen = /run/php/php%s-fpm-%s.sock
+listen.owner = www-data
+listen.group = www-data
+pm = dynamic
+pm.max_children = 5
+pm.start_servers = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 3
+
+php_value[memory_limit] = %s
+php_value[upload_max_filesize] = %s
+php_value[post_max_size] = %s
+php_value[max_execution_time] = %s
+php_value[max_input_vars] = %s
+`, domain, domain, domain, phpVer, domain,
+		settings.MemoryLimit,
+		settings.UploadMaxFilesize,
+		settings.PostMaxSize,
+		settings.MaxExecutionTime,
+		settings.MaxInputVars,
+	)
+
+	poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", phpVer, domain)
+	err := os.WriteFile(poolPath, []byte(phpPoolConfig), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write php-fpm pool config: %v", err)
+	}
+	return executeShell("systemctl", "reload", fmt.Sprintf("php%s-fpm", phpVer))
 }
 
 // --- NEW CPANEL FEATURE HANDLERS AND HELPERS ---
@@ -1496,6 +1569,122 @@ func handlePMASession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleGetPHPSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		http.Error(w, "domain query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	settingsMap := loadPHPSettings()
+	settings, exists := settingsMap[domain]
+	if !exists {
+		settings = PHPDomainSettings{
+			MemoryLimit:       "128M",
+			UploadMaxFilesize: "64M",
+			PostMaxSize:       "64M",
+			MaxExecutionTime:  "120",
+			MaxInputVars:      "1000",
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(settings)
+}
+
+func handleSavePHPSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Domain            string `json:"domain"`
+		MemoryLimit       string `json:"memory_limit"`
+		UploadMaxFilesize string `json:"upload_max_filesize"`
+		PostMaxSize       string `json:"post_max_size"`
+		MaxExecutionTime  string `json:"max_execution_time"`
+		MaxInputVars      string `json:"max_input_vars"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Domain == "" {
+		http.Error(w, "domain is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate inputs to prevent malicious shell / pool syntax injection
+	valRegex := regexp.MustCompile(`^[0-9a-zA-Z]+$`)
+	if !valRegex.MatchString(req.MemoryLimit) ||
+		!valRegex.MatchString(req.UploadMaxFilesize) ||
+		!valRegex.MatchString(req.PostMaxSize) ||
+		!valRegex.MatchString(req.MaxExecutionTime) ||
+		!valRegex.MatchString(req.MaxInputVars) {
+		http.Error(w, "Invalid setting value format", http.StatusBadRequest)
+		return
+	}
+
+	settingsMap := loadPHPSettings()
+	settingsMap[req.Domain] = PHPDomainSettings{
+		MemoryLimit:       req.MemoryLimit,
+		UploadMaxFilesize: req.UploadMaxFilesize,
+		PostMaxSize:       req.PostMaxSize,
+		MaxExecutionTime:  req.MaxExecutionTime,
+		MaxInputVars:      req.MaxInputVars,
+	}
+
+	if err := savePHPSettings(settingsMap); err != nil {
+		http.Error(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Retrieve active PHP version for this domain
+	sites := loadSites()
+	phpVer := "8.3" // default fallback
+	found := false
+	for _, s := range sites {
+		if s.Domain == req.Domain {
+			phpVer = s.PHPVersion
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		http.Error(w, "Domain not found in site list", http.StatusNotFound)
+		return
+	}
+
+	// Rebuild PHP Pool and reload FPM
+	if err := rebuildPHPPool(req.Domain, phpVer); err != nil {
+		http.Error(w, "Failed to rebuild PHP pool: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
 func main() {
 	initCredentials()
 
@@ -1503,6 +1692,8 @@ func main() {
 
 	// Register API endpoints
 	mux.HandleFunc("/api/auth/login", handleLogin)
+	mux.HandleFunc("/api/php/ini", authMiddleware(handleGetPHPSettings))
+	mux.HandleFunc("/api/php/ini/save", authMiddleware(handleSavePHPSettings))
 	
 	// Protected administrative endpoints
 	mux.HandleFunc("/api/migrate", authMiddleware(handleMigrate))
@@ -1751,22 +1942,9 @@ func handleMigrate(w http.ResponseWriter, r *http.Request) {
 
 		// 5. Dynamic PHP-FPM pool allocation for isolated target user
 		setJobStatus(id, config.LocalDomain, "processing", "Allocating PHP-FPM execution pool...")
-		phpPoolConfig := fmt.Sprintf(`[%s]
-user = %s
-group = %s
-listen = /run/php/php%s-fpm-%s.sock
-listen.owner = www-data
-listen.group = www-data
-pm = dynamic
-pm.max_children = 5
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 3
-`, config.LocalDomain, config.LocalDomain, config.LocalDomain, config.LocalPHPVer, config.LocalDomain)
-
-		poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", config.LocalPHPVer, config.LocalDomain)
-		_ = os.WriteFile(poolPath, []byte(phpPoolConfig), 0644)
-		_ = executeShell("systemctl", "reload", fmt.Sprintf("php%s-fpm", config.LocalPHPVer))
+		if err := rebuildPHPPool(config.LocalDomain, config.LocalPHPVer); err != nil {
+			log.Printf("[%s] Warning: failed to rebuild PHP pool: %v", id, err)
+		}
 
 		// 6. Generate nginx config template and reload Nginx reverse proxy
 		setJobStatus(id, config.LocalDomain, "processing", "Configuring Nginx routing template...")
@@ -1975,22 +2153,11 @@ func handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	_ = executeShell("chown", "-R", fmt.Sprintf("%s:%s", body.Domain, body.Domain), fmt.Sprintf("/var/www/vhosts/%s", body.Domain))
 
 	// PHP-FPM pool
-	phpPoolConfig := fmt.Sprintf(`[%s]
-user = %s
-group = %s
-listen = /run/php/php%s-fpm-%s.sock
-listen.owner = www-data
-listen.group = www-data
-pm = dynamic
-pm.max_children = 5
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 3
-`, body.Domain, body.Domain, body.Domain, body.PHPVersion, body.Domain)
-
-	poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", body.PHPVersion, body.Domain)
-	_ = os.WriteFile(poolPath, []byte(phpPoolConfig), 0644)
-	_ = executeShell("systemctl", "reload", fmt.Sprintf("php%s-fpm", body.PHPVersion))
+	err := rebuildPHPPool(body.Domain, body.PHPVersion)
+	if err != nil {
+		http.Error(w, "Failed to rebuild PHP pool: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	addSiteToStore(body.Domain, body.PHPVersion, false, false)
 	_ = rebuildNginxConfig(body.Domain)

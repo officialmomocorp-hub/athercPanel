@@ -107,6 +107,17 @@ export default function App() {
   const [remoteDBLoading, setRemoteDBLoading] = useState(false);
   const [remoteDBToggling, setRemoteDBToggling] = useState(false);
 
+  // MultiPHP INI Editor state
+  const [showIniModal, setShowIniModal] = useState(false);
+  const [iniDomain, setIniDomain] = useState('');
+  const [iniMemoryLimit, setIniMemoryLimit] = useState('128M');
+  const [iniUploadLimit, setIniUploadLimit] = useState('64M');
+  const [iniPostLimit, setIniPostLimit] = useState('64M');
+  const [iniExecTime, setIniExecTime] = useState('120');
+  const [iniInputVars, setIniInputVars] = useState('1000');
+  const [iniLoading, setIniLoading] = useState(false);
+  const [iniSaving, setIniSaving] = useState(false);
+
   const toggleCategoryCollapse = (catId) => {
     setCollapsedCategories(prev => ({
       ...prev,
@@ -758,6 +769,52 @@ export default function App() {
       });
       await fetchRemoteDBStatus();
     } catch (err) { console.error(err); }
+  };
+
+  // ===== MultiPHP INI Editor handlers =====
+  const fetchPHPSettings = async (domain) => {
+    if (!domain) return;
+    setIniLoading(true);
+    try {
+      const res = await apiFetch(`/api/php/ini?domain=${domain}`);
+      if (res && res.ok) {
+        const data = await res.json();
+        setIniMemoryLimit(data.memory_limit || '128M');
+        setIniUploadLimit(data.upload_max_filesize || '64M');
+        setIniPostLimit(data.post_max_size || '64M');
+        setIniExecTime(data.max_execution_time || '120');
+        setIniInputVars(data.max_input_vars || '1000');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    setIniLoading(false);
+  };
+
+  const handleSaveIniSettings = async (e) => {
+    e.preventDefault();
+    if (!iniDomain) return;
+    setIniSaving(true);
+    try {
+      const res = await apiFetch('/api/php/ini/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          domain: iniDomain,
+          memory_limit: iniMemoryLimit,
+          upload_max_filesize: iniUploadLimit,
+          post_max_size: iniPostLimit,
+          max_execution_time: iniExecTime,
+          max_input_vars: iniInputVars
+        })
+      });
+      if (res && res.ok) {
+        setShowIniModal(false);
+        alert('PHP INI settings updated and FPM reloaded successfully!');
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    setIniSaving(false);
   };
 
   // Global File Manager State
@@ -1547,15 +1604,29 @@ export default function App() {
                     <span className="font-bold text-slate-800 text-sm block">{site.domain}</span>
                     <span className="text-[10px] text-slate-400">Current version: PHP {site.phpVersion}</span>
                   </div>
-                  <select
-                    value={site.phpVersion}
-                    onChange={e => handleUpdatePHP(site.domain, e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold focus:outline-none"
-                  >
-                    {['7.4', '8.1', '8.2', '8.3', '8.4'].map(v => (
-                      <option key={v} value={v}>PHP {v}</option>
-                    ))}
-                  </select>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => {
+                        setIniDomain(site.domain);
+                        fetchPHPSettings(site.domain);
+                        setShowIniModal(true);
+                        setShowPHPManagerModal(false);
+                      }}
+                      className="px-2 py-1 bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-700 rounded text-[10px] font-bold transition flex items-center space-x-1"
+                      title="Edit PHP.ini limits"
+                    >
+                      <span>⚙️ Edit INI</span>
+                    </button>
+                    <select
+                      value={site.phpVersion}
+                      onChange={e => handleUpdatePHP(site.domain, e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold focus:outline-none"
+                    >
+                      {['7.4', '8.1', '8.2', '8.3', '8.4'].map(v => (
+                        <option key={v} value={v}>PHP {v}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               ))}
               {sites.length === 0 && (
@@ -2339,6 +2410,103 @@ export default function App() {
                   )}
                 </div>
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ============ MULTIPHP INI EDITOR MODAL ============ */}
+      {showIniModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-6">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-8 shadow-2xl relative">
+            <button onClick={() => setShowIniModal(false)} className="absolute top-6 right-6 text-slate-400 hover:text-slate-700 text-sm font-bold">X</button>
+            <h2 className="text-lg font-black text-slate-800 mb-1">MultiPHP INI Editor</h2>
+            <p className="text-xs text-slate-500 mb-6 font-medium">Easily adjust PHP configuration limits for <code className="text-xs font-mono text-orange-600 bg-orange-50 px-1 rounded">{iniDomain}</code>.</p>
+
+            {iniLoading ? (
+              <div className="text-xs text-slate-400 py-8 text-center">Loading settings...</div>
+            ) : (
+              <form onSubmit={handleSaveIniSettings} className="space-y-4">
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1 font-semibold uppercase tracking-wider">Memory Limit</label>
+                  <select
+                    value={iniMemoryLimit}
+                    onChange={e => setIniMemoryLimit(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none"
+                  >
+                    {['64M', '128M', '256M', '512M', '1024M', '2048M'].map(v => (
+                      <option key={v} value={v}>{v}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1 font-semibold uppercase tracking-wider">Max Upload Size</label>
+                    <select
+                      value={iniUploadLimit}
+                      onChange={e => setIniUploadLimit(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs text-slate-800 focus:outline-none"
+                    >
+                      {['2M', '8M', '16M', '32M', '64M', '128M', '256M', '512M', '1024M'].map(v => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1 font-semibold uppercase tracking-wider">Max Post Size</label>
+                    <select
+                      value={iniPostLimit}
+                      onChange={e => setIniPostLimit(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-2 text-xs text-slate-800 focus:outline-none"
+                    >
+                      {['2M', '8M', '16M', '32M', '64M', '128M', '256M', '512M', '1024M'].map(v => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1 font-semibold uppercase tracking-wider">Max Exec Time (sec)</label>
+                    <input
+                      type="number"
+                      required
+                      value={iniExecTime}
+                      onChange={e => setIniExecTime(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none"
+                      placeholder="e.g. 120"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1 font-semibold uppercase tracking-wider">Max Input Vars</label>
+                    <input
+                      type="number"
+                      required
+                      value={iniInputVars}
+                      onChange={e => setIniInputVars(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none"
+                      placeholder="e.g. 1000"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end space-x-3 pt-4 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => { setShowIniModal(false); setShowPHPManagerModal(true); }}
+                    className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-800"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={iniSaving}
+                    className="px-5 py-2 bg-orange-600 hover:bg-orange-500 disabled:bg-slate-200 text-white rounded-lg text-xs font-bold shadow transition"
+                  >
+                    {iniSaving ? 'Saving...' : 'Apply Limits'}
+                  </button>
+                </div>
+              </form>
             )}
           </div>
         </div>
