@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+dist/
+*.tar.gz
+*.exe
+*.dll
+*.so
+*.dylib
+*.log
+
+# Local Configs
+config.json
+sites.json
+databases.json
+remote_ips.json
+privacy.json
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# IDEs
+.vscode/
+.idea/
