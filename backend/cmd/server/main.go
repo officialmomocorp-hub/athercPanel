@@ -1408,6 +1408,94 @@ func handleDBRemoteIPRemove(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
 
+func handlePMASession(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	credentialsFile := "/opt/aether-panel/pma_root_credentials.json"
+	type PMACredentials struct {
+		User string `json:"user"`
+		Pass string `json:"pass"`
+	}
+
+	var creds PMACredentials
+	data, err := os.ReadFile(credentialsFile)
+	if err != nil {
+		randPass := uuid.New().String() + uuid.New().String()
+		randPass = strings.ReplaceAll(randPass, "-", "")[:32]
+		creds = PMACredentials{
+			User: "aether_pma_root",
+			Pass: randPass,
+		}
+
+		createSQL := fmt.Sprintf(
+			"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON *.* TO '%s'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;",
+			creds.User, creds.Pass, creds.User,
+		)
+		err = exec.Command("mysql", "-u", "root", "-e", createSQL).Run()
+		if err != nil {
+			http.Error(w, "Failed to create phpMyAdmin administrative user: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		bytesData, _ := json.Marshal(creds)
+		_ = os.WriteFile(credentialsFile, bytesData, 0600)
+	} else {
+		_ = json.Unmarshal(data, &creds)
+	}
+
+	token := uuid.New().String()
+	sessionsFile := "/opt/aether-panel/pma_sessions.json"
+	type PMASession struct {
+		User    string `json:"user"`
+		Pass    string `json:"pass"`
+		Expires int64  `json:"expires"`
+	}
+
+	sessions := make(map[string]PMASession)
+	if sessionData, err := os.ReadFile(sessionsFile); err == nil {
+		_ = json.Unmarshal(sessionData, &sessions)
+	}
+
+	sessions[token] = PMASession{
+		User:    creds.User,
+		Pass:    creds.Pass,
+		Expires: time.Now().Unix() + 30,
+	}
+
+	now := time.Now().Unix()
+	for k, v := range sessions {
+		if now > v.Expires {
+			delete(sessions, k)
+		}
+	}
+
+	bytesData, _ := json.Marshal(sessions)
+	_ = os.WriteFile(sessionsFile, bytesData, 0600)
+	_ = os.Chmod(sessionsFile, 0644)
+
+	host := r.Host
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	redirectURL := fmt.Sprintf("https://%s/phpmyadmin/signon.php?token=%s", host, token)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"url": redirectURL,
+	})
+}
+
 func main() {
 	initCredentials()
 
@@ -1456,6 +1544,7 @@ func main() {
 	mux.HandleFunc("/api/db/remote/toggle", authMiddleware(handleDBRemoteToggle))
 	mux.HandleFunc("/api/db/remote/ip/add", authMiddleware(handleDBRemoteIPAdd))
 	mux.HandleFunc("/api/db/remote/ip/remove", authMiddleware(handleDBRemoteIPRemove))
+	mux.HandleFunc("/api/db/pma-session", authMiddleware(handlePMASession))
 
 	// Static assets handler (React dashboard compilation output)
 	mux.Handle("/", http.FileServer(http.Dir("./frontend/dist")))

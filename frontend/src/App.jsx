@@ -818,6 +818,23 @@ export default function App() {
     }
     setFmSaving(false);
   };
+
+  const handleOpenPMA = async () => {
+    try {
+      const res = await apiFetch('/api/db/pma-session', { method: 'POST' });
+      if (res && res.ok) {
+        const data = await res.json();
+        if (data.url) {
+          window.open(data.url, '_blank');
+        }
+      } else {
+        window.open(`https://${window.location.hostname}/phpmyadmin/`, '_blank');
+      }
+    } catch (err) {
+      window.open(`https://${window.location.hostname}/phpmyadmin/`, '_blank');
+    }
+  };
+
   if (!token) {
     return <Login onLoginSuccess={handleLoginSuccess} />;
   }
@@ -888,7 +905,7 @@ export default function App() {
         {
           name: 'phpMyAdmin',
           desc: 'Direct administrative access to SQL tables',
-          action: () => window.open(`http://${window.location.hostname}/phpmyadmin/`, '_blank'),
+          action: handleOpenPMA,
           icon: (
             <svg className="w-8 h-8 text-cyan-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
