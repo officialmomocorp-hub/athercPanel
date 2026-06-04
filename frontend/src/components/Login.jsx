@@ -19,7 +19,7 @@ export default function Login({ onLoginSuccess }) {
     };
   }, []);
 
-  // HTML5 Interactive Canvas Particles Background (Webuzo-inspired tech trail)
+  // HTML5 Interactive Canvas Premium Constellation/Particle Trail Background
   useEffect(() => {
     const canvas = document.getElementById('login-canvas');
     if (!canvas) return;
@@ -29,110 +29,205 @@ export default function Login({ onLoginSuccess }) {
     let width = canvas.width = window.innerWidth;
     let height = canvas.height = window.innerHeight;
 
-    const particles = [];
-    const maxDistance = 110;
-    // Calculate density based on viewport size
-    const particleCount = Math.min(75, Math.floor((width * height) / 20000));
+    let mouseX = width * 0.5;
+    let mouseY = height * 0.5;
+    let isMouseActive = false;
+    let lastSpawnTime = 0;
 
-    class Particle {
-      constructor() {
-        this.x = Math.random() * width;
-        this.y = Math.random() * height;
-        this.vx = (Math.random() - 0.5) * 0.75;
-        this.vy = (Math.random() - 0.5) * 0.75;
-        this.radius = Math.random() * 2 + 1;
-        this.color = `rgba(99, 102, 241, ${Math.random() * 0.35 + 0.15})`; // Indigo tones
+    const dynamicParticles = [];
+    const ambientParticles = [];
+    
+    // Premium neon sci-fi color palette
+    const colors = ["#6366f1", "#a855f7", "#3b82f6", "#06b6d4", "#ec4899", "#14b8a6", "#f43f5e", "#10b981"];
+
+    // Initialize 15 ambient particles that float slowly
+    const initAmbientParticles = () => {
+      ambientParticles.length = 0;
+      for (let i = 0; i < 15; i++) {
+        ambientParticles.push({
+          x: Math.random() * width,
+          y: Math.random() * height,
+          vx: (Math.random() - 0.5) * 0.4,
+          vy: (Math.random() - 0.5) * 0.4,
+          size: Math.random() * 2 + 1.2,
+          color: colors[i % colors.length]
+        });
       }
+    };
 
-      update() {
-        this.x += this.vx;
-        this.y += this.vy;
-
-        // Bounce from borders
-        if (this.x < 0 || this.x > width) this.vx *= -1;
-        if (this.y < 0 || this.y > height) this.vy *= -1;
-      }
-
-      draw() {
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-        ctx.fillStyle = this.color;
-        ctx.fill();
-      }
-    }
-
-    // Populate particles
-    for (let i = 0; i < particleCount; i++) {
-      particles.push(new Particle());
-    }
-
-    // Mouse coordinates tracker
-    const mouse = { x: null, y: null, radius: 140 };
+    initAmbientParticles();
 
     const handleMouseMove = (e) => {
-      mouse.x = e.clientX;
-      mouse.y = e.clientY;
+      mouseX = e.clientX;
+      mouseY = e.clientY;
+      isMouseActive = true;
+
+      // Rate limit spawning of cursor trail particles (max one per 16ms to maintain 60fps)
+      const now = Date.now();
+      if (now - lastSpawnTime > 16) {
+        dynamicParticles.push({
+          x: mouseX,
+          y: mouseY,
+          vx: (Math.random() - 0.5) * 1.6,
+          vy: (Math.random() - 0.5) * 1.6 - 0.4, // Slight upward drift
+          size: Math.random() * 3.5 + 1.8,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          life: 70,
+          maxLife: 70
+        });
+
+        // Cap dynamic particles to prevent lag
+        if (dynamicParticles.length > 70) {
+          dynamicParticles.shift();
+        }
+        lastSpawnTime = now;
+      }
     };
 
-    const handleMouseLeave = () => {
-      mouse.x = null;
-      mouse.y = null;
+    const handleMouseDown = () => {
+      // Spawn dynamic radial burst on click
+      for (let i = 0; i < 15; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 3.5 + 1.5;
+        dynamicParticles.push({
+          x: mouseX,
+          y: mouseY,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          size: Math.random() * 3.5 + 2.5,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          life: 60,
+          maxLife: 60
+        });
+      }
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseleave', handleMouseLeave);
+    const handleTouchStart = (e) => {
+      if (e.touches.length === 1) {
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+        isMouseActive = true;
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (e.touches.length === 1) {
+        mouseX = e.touches[0].clientX;
+        mouseY = e.touches[0].clientY;
+        isMouseActive = true;
+      }
+    };
 
     const handleResize = () => {
       if (!canvas) return;
       width = canvas.width = window.innerWidth;
       height = canvas.height = window.innerHeight;
+      initAmbientParticles();
     };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('touchstart', handleTouchStart);
+    window.addEventListener('touchmove', handleTouchMove);
     window.addEventListener('resize', handleResize);
 
     const animate = () => {
+      // Clear screen fully to prevent old line accumulation
       ctx.clearRect(0, 0, width, height);
 
-      // Deep premium tech background fill
-      ctx.fillStyle = '#05070f';
-      ctx.fillRect(0, 0, width, height);
+      // 1. Update and draw ambient floating particles
+      for (let i = 0; i < ambientParticles.length; i++) {
+        const ap = ambientParticles[i];
+        ap.x += ap.vx;
+        ap.y += ap.vy;
 
-      // Render and update particles
-      particles.forEach(p => {
-        p.update();
-        p.draw();
+        // Wrap around screen edges
+        if (ap.x < 0) ap.x = width;
+        if (ap.x > width) ap.x = 0;
+        if (ap.y < 0) ap.y = height;
+        if (ap.y > height) ap.y = 0;
 
-        // Mouse repelling physics
-        if (mouse.x !== null) {
-          const dx = p.x - mouse.x;
-          const dy = p.y - mouse.y;
+        ctx.beginPath();
+        ctx.arc(ap.x, ap.y, ap.size, 0, Math.PI * 2);
+        ctx.fillStyle = ap.color;
+        ctx.globalAlpha = 0.25;
+        ctx.fill();
+      }
+
+      // 2. Update, fade, and draw dynamic trail particles
+      for (let i = dynamicParticles.length - 1; i >= 0; i--) {
+        const dp = dynamicParticles[i];
+        dp.x += dp.vx;
+        dp.y += dp.vy;
+        
+        // Decelerate slightly
+        dp.vx *= 0.98;
+        dp.vy *= 0.98;
+        
+        dp.life--;
+
+        if (dp.life <= 0) {
+          dynamicParticles.splice(i, 1);
+          continue;
+        }
+
+        const alpha = dp.life / dp.maxLife;
+
+        ctx.beginPath();
+        ctx.arc(dp.x, dp.y, dp.size * alpha, 0, Math.PI * 2);
+        ctx.fillStyle = dp.color;
+        ctx.globalAlpha = alpha * 0.7;
+        ctx.fill();
+      }
+
+      // Combine both particle arrays for drawing the network connections
+      const allParticles = [...ambientParticles, ...dynamicParticles];
+
+      // 3. Draw connecting lines between close particles (Constellation grid)
+      for (let i = 0; i < allParticles.length; i++) {
+        const p1 = allParticles[i];
+        const a1 = p1.life !== undefined ? p1.life / p1.maxLife : 1.0;
+
+        // Connect particles to each other
+        for (let j = i + 1; j < allParticles.length; j++) {
+          const p2 = allParticles[j];
+          const a2 = p2.life !== undefined ? p2.life / p2.maxLife : 1.0;
+          const dx = p1.x - p2.x;
+          const dy = p1.y - p2.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < mouse.radius) {
-            const force = (mouse.radius - dist) / mouse.radius;
-            p.x += (dx / dist) * force * 1.8;
-            p.y += (dy / dist) * force * 1.8;
+
+          if (dist < 90) {
+            const lineAlpha = (1 - dist / 90) * 0.08 * Math.min(a1, a2);
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.strokeStyle = p1.color;
+            ctx.globalAlpha = lineAlpha;
+            ctx.lineWidth = 0.6;
+            ctx.stroke();
           }
         }
-      });
 
-      // Draw connection lines
-      for (let i = 0; i < particles.length; i++) {
-        for (let j = i + 1; j < particles.length; j++) {
-          const dx = particles[i].x - particles[j].x;
-          const dy = particles[i].y - particles[j].y;
+        // Connect nearby particles to cursor (when mouse is active)
+        if (isMouseActive) {
+          const dx = p1.x - mouseX;
+          const dy = p1.y - mouseY;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
-          if (dist < maxDistance) {
+          if (dist < 130) {
+            const lineAlpha = (1 - dist / 130) * 0.12 * a1;
             ctx.beginPath();
-            ctx.moveTo(particles[i].x, particles[i].y);
-            ctx.lineTo(particles[j].x, particles[j].y);
-            // Dynamic transparency relative to distance
-            ctx.strokeStyle = `rgba(99, 102, 241, ${(maxDistance - dist) / (maxDistance * 11)})`;
-            ctx.lineWidth = 0.75;
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(mouseX, mouseY);
+            ctx.strokeStyle = p1.color;
+            ctx.globalAlpha = lineAlpha;
+            ctx.lineWidth = 0.8;
             ctx.stroke();
           }
         }
       }
 
+      ctx.globalAlpha = 1.0; // Reset canvas opacity
       animationFrameId = requestAnimationFrame(animate);
     };
 
@@ -141,7 +236,9 @@ export default function Login({ onLoginSuccess }) {
     return () => {
       cancelAnimationFrame(animationFrameId);
       window.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseleave', handleMouseLeave);
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('resize', handleResize);
     };
   }, []);
@@ -181,7 +278,7 @@ export default function Login({ onLoginSuccess }) {
       className="min-h-screen text-slate-100 flex items-center justify-center p-6 relative overflow-hidden selection:bg-indigo-600 selection:text-white"
       style={{ fontFamily: "'Poppins', sans-serif" }}
     >
-      {/* Dynamic Interactive Particle Canvas */}
+      {/* Dynamic Webuzo-like Orbit Trail Canvas */}
       <canvas id="login-canvas" className="absolute inset-0 w-full h-full z-0" />
 
       {/* Decorative Radial Lighting */}
