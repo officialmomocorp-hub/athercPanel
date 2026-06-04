@@ -19,7 +19,7 @@ export default function Login({ onLoginSuccess }) {
     };
   }, []);
 
-  // HTML5 Interactive Canvas Premium Constellation/Particle Trail Background
+  // HTML5 Interactive Canvas Premium Neon Galaxy Constellation Background
   useEffect(() => {
     const canvas = document.getElementById('login-canvas');
     if (!canvas) return;
@@ -31,8 +31,11 @@ export default function Login({ onLoginSuccess }) {
 
     let mouseX = width * 0.5;
     let mouseY = height * 0.5;
+    let targetMouseX = mouseX;
+    let targetMouseY = mouseY;
     let isMouseActive = false;
     let lastSpawnTime = 0;
+    let time = 0;
 
     const dynamicParticles = [];
     const ambientParticles = [];
@@ -40,17 +43,19 @@ export default function Login({ onLoginSuccess }) {
     // Premium neon sci-fi color palette
     const colors = ["#6366f1", "#a855f7", "#3b82f6", "#06b6d4", "#ec4899", "#14b8a6", "#f43f5e", "#10b981"];
 
-    // Initialize 15 ambient particles that float slowly
+    // Initialize 25 ambient particles with twinkling values
     const initAmbientParticles = () => {
       ambientParticles.length = 0;
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 25; i++) {
         ambientParticles.push({
           x: Math.random() * width,
           y: Math.random() * height,
-          vx: (Math.random() - 0.5) * 0.4,
-          vy: (Math.random() - 0.5) * 0.4,
+          vx: (Math.random() - 0.5) * 0.35,
+          vy: (Math.random() - 0.5) * 0.35,
           size: Math.random() * 2 + 1.2,
-          color: colors[i % colors.length]
+          color: colors[i % colors.length],
+          phase: Math.random() * Math.PI * 2,
+          twinkleSpeed: 0.01 + Math.random() * 0.02
         });
       }
     };
@@ -58,26 +63,26 @@ export default function Login({ onLoginSuccess }) {
     initAmbientParticles();
 
     const handleMouseMove = (e) => {
-      mouseX = e.clientX;
-      mouseY = e.clientY;
+      targetMouseX = e.clientX;
+      targetMouseY = e.clientY;
       isMouseActive = true;
 
-      // Rate limit spawning of cursor trail particles (max one per 16ms to maintain 60fps)
+      // Rate limit spawning of cursor trail particles (max one per 14ms to maintain 60fps)
       const now = Date.now();
-      if (now - lastSpawnTime > 16) {
+      if (now - lastSpawnTime > 14) {
         dynamicParticles.push({
-          x: mouseX,
-          y: mouseY,
-          vx: (Math.random() - 0.5) * 1.6,
-          vy: (Math.random() - 0.5) * 1.6 - 0.4, // Slight upward drift
-          size: Math.random() * 3.5 + 1.8,
+          x: targetMouseX,
+          y: targetMouseY,
+          vx: (Math.random() - 0.5) * 2.0,
+          vy: (Math.random() - 0.5) * 2.0 - 0.5, // Gentle upward drift
+          size: Math.random() * 3.5 + 2.0,
           color: colors[Math.floor(Math.random() * colors.length)],
-          life: 70,
-          maxLife: 70
+          life: 80,
+          maxLife: 80
         });
 
         // Cap dynamic particles to prevent lag
-        if (dynamicParticles.length > 70) {
+        if (dynamicParticles.length > 80) {
           dynamicParticles.shift();
         }
         lastSpawnTime = now;
@@ -86,34 +91,34 @@ export default function Login({ onLoginSuccess }) {
 
     const handleMouseDown = () => {
       // Spawn dynamic radial burst on click
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 25; i++) {
         const angle = Math.random() * Math.PI * 2;
-        const speed = Math.random() * 3.5 + 1.5;
+        const speed = Math.random() * 5.0 + 2.5;
         dynamicParticles.push({
-          x: mouseX,
-          y: mouseY,
+          x: targetMouseX,
+          y: targetMouseY,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
-          size: Math.random() * 3.5 + 2.5,
+          size: Math.random() * 4.0 + 2.5,
           color: colors[Math.floor(Math.random() * colors.length)],
-          life: 60,
-          maxLife: 60
+          life: 70,
+          maxLife: 70
         });
       }
     };
 
     const handleTouchStart = (e) => {
       if (e.touches.length === 1) {
-        mouseX = e.touches[0].clientX;
-        mouseY = e.touches[0].clientY;
+        targetMouseX = e.touches[0].clientX;
+        targetMouseY = e.touches[0].clientY;
         isMouseActive = true;
       }
     };
 
     const handleTouchMove = (e) => {
       if (e.touches.length === 1) {
-        mouseX = e.touches[0].clientX;
-        mouseY = e.touches[0].clientY;
+        targetMouseX = e.touches[0].clientX;
+        targetMouseY = e.touches[0].clientY;
         isMouseActive = true;
       }
     };
@@ -132,14 +137,47 @@ export default function Login({ onLoginSuccess }) {
     window.addEventListener('resize', handleResize);
 
     const animate = () => {
+      time++;
       // Clear screen fully to prevent old line accumulation
       ctx.clearRect(0, 0, width, height);
 
-      // 1. Update and draw ambient floating particles
+      // Smooth easing follow for the mouse coordinate center
+      mouseX += (targetMouseX - mouseX) * 0.12;
+      mouseY += (targetMouseY - mouseY) * 0.12;
+
+      // Draw subtle dynamic radial spotlight backdrop centered at the mouse
+      if (isMouseActive) {
+        const glowRad = ctx.createRadialGradient(mouseX, mouseY, 0, mouseX, mouseY, 280);
+        glowRad.addColorStop(0, 'rgba(99, 102, 241, 0.09)'); // Indigo core
+        glowRad.addColorStop(0.4, 'rgba(168, 85, 247, 0.04)'); // Violet mid
+        glowRad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = glowRad;
+        ctx.globalAlpha = 1.0;
+        ctx.fillRect(0, 0, width, height);
+      }
+
+      // 1. Update and draw ambient twinkling stars
       for (let i = 0; i < ambientParticles.length; i++) {
         const ap = ambientParticles[i];
+        
+        // Gentle gravity pull toward cursor when nearby
+        if (isMouseActive) {
+          const dx = mouseX - ap.x;
+          const dy = mouseY - ap.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 250) {
+            const pull = (1 - dist / 250) * 0.12;
+            ap.vx += (dx / dist) * pull;
+            ap.vy += (dy / dist) * pull;
+          }
+        }
+
         ap.x += ap.vx;
         ap.y += ap.vy;
+
+        // Apply friction to pull speeds
+        ap.vx *= 0.97;
+        ap.vy *= 0.97;
 
         // Wrap around screen edges
         if (ap.x < 0) ap.x = width;
@@ -147,22 +185,37 @@ export default function Login({ onLoginSuccess }) {
         if (ap.y < 0) ap.y = height;
         if (ap.y > height) ap.y = 0;
 
+        // Twinkle effect (sinusoidal scaling of opacity)
+        const twinkleAlpha = 0.15 + (Math.sin(time * ap.twinkleSpeed + ap.phase) + 1) * 0.2;
+
         ctx.beginPath();
         ctx.arc(ap.x, ap.y, ap.size, 0, Math.PI * 2);
         ctx.fillStyle = ap.color;
-        ctx.globalAlpha = 0.25;
+        ctx.globalAlpha = twinkleAlpha;
         ctx.fill();
       }
 
       // 2. Update, fade, and draw dynamic trail particles
       for (let i = dynamicParticles.length - 1; i >= 0; i--) {
         const dp = dynamicParticles[i];
+        
+        // Gravitational attraction toward mouse
+        if (isMouseActive) {
+          const dx = mouseX - dp.x;
+          const dy = mouseY - dp.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 220) {
+            const pull = (1 - dist / 220) * 0.18;
+            dp.vx += (dx / dist) * pull;
+            dp.vy += (dy / dist) * pull;
+          }
+        }
+
         dp.x += dp.vx;
         dp.y += dp.vy;
         
-        // Decelerate slightly
-        dp.vx *= 0.98;
-        dp.vy *= 0.98;
+        dp.vx *= 0.96;
+        dp.vy *= 0.96;
         
         dp.life--;
 
@@ -176,52 +229,70 @@ export default function Login({ onLoginSuccess }) {
         ctx.beginPath();
         ctx.arc(dp.x, dp.y, dp.size * alpha, 0, Math.PI * 2);
         ctx.fillStyle = dp.color;
-        ctx.globalAlpha = alpha * 0.7;
+        ctx.globalAlpha = alpha * 0.85;
+        
+        // Soft neon glow effect for larger dynamic stars
+        if (dp.size > 3.5) {
+          ctx.shadowBlur = 12;
+          ctx.shadowColor = dp.color;
+        }
         ctx.fill();
+        ctx.shadowBlur = 0; // reset shadow
       }
 
-      // Combine both particle arrays for drawing the network connections
+      // Combine both particle arrays for connection rendering
       const allParticles = [...ambientParticles, ...dynamicParticles];
 
-      // 3. Draw connecting lines between close particles (Constellation grid)
+      // 3. Draw linear gradient connecting lines (Constellation web)
       for (let i = 0; i < allParticles.length; i++) {
         const p1 = allParticles[i];
-        const a1 = p1.life !== undefined ? p1.life / p1.maxLife : 1.0;
+        const a1 = p1.life !== undefined ? p1.life / p1.maxLife : 0.6;
 
         // Connect particles to each other
         for (let j = i + 1; j < allParticles.length; j++) {
           const p2 = allParticles[j];
-          const a2 = p2.life !== undefined ? p2.life / p2.maxLife : 1.0;
+          const a2 = p2.life !== undefined ? p2.life / p2.maxLife : 0.6;
           const dx = p1.x - p2.x;
           const dy = p1.y - p2.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
-          if (dist < 90) {
-            const lineAlpha = (1 - dist / 90) * 0.08 * Math.min(a1, a2);
+          if (dist < 95) {
+            const lineAlpha = (1 - dist / 95) * 0.10 * Math.min(a1, a2);
             ctx.beginPath();
             ctx.moveTo(p1.x, p1.y);
             ctx.lineTo(p2.x, p2.y);
-            ctx.strokeStyle = p1.color;
+            
+            // Draw connection using a linear gradient between the two particle colors
+            const grad = ctx.createLinearGradient(p1.x, p1.y, p2.x, p2.y);
+            grad.addColorStop(0, p1.color);
+            grad.addColorStop(1, p2.color);
+            ctx.strokeStyle = grad;
+            
             ctx.globalAlpha = lineAlpha;
-            ctx.lineWidth = 0.6;
+            ctx.lineWidth = 0.65;
             ctx.stroke();
           }
         }
 
-        // Connect nearby particles to cursor (when mouse is active)
+        // Connect nearby particles to cursor center (when mouse is active)
         if (isMouseActive) {
           const dx = p1.x - mouseX;
           const dy = p1.y - mouseY;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
-          if (dist < 130) {
-            const lineAlpha = (1 - dist / 130) * 0.12 * a1;
+          if (dist < 140) {
+            const lineAlpha = (1 - dist / 140) * 0.15 * a1;
             ctx.beginPath();
             ctx.moveTo(p1.x, p1.y);
             ctx.lineTo(mouseX, mouseY);
-            ctx.strokeStyle = p1.color;
+            
+            const grad = ctx.createLinearGradient(p1.x, p1.y, mouseX, mouseY);
+            grad.addColorStop(0, p1.color);
+            grad.addColorStop(1, "#ffffff"); // Fades smoothly to white core
+            ctx.strokeStyle = grad;
+
             ctx.globalAlpha = lineAlpha;
-            ctx.lineWidth = 0.8;
+            ctx.lineWidth = 0.85;
             ctx.stroke();
           }
         }
