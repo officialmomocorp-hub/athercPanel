@@ -141,6 +141,15 @@ export default function App() {
   const [scanActionLoading, setScanActionLoading] = useState(false);
   const [wafToggling, setWafToggling] = useState(null);
 
+  // Website Builder state
+  const [showWebBuilderModal, setShowWebBuilderModal] = useState(false);
+  const [webBuilderDomain, setWebBuilderDomain] = useState('');
+  const [webBuilderLoading, setWebBuilderLoading] = useState(false);
+  const [webBuilderPublishing, setWebBuilderPublishing] = useState(false);
+  const [webBuilderSaving, setWebBuilderSaving] = useState(false);
+  const [editorInstance, setEditorInstance] = useState(null);
+
+
 
   const toggleCategoryCollapse = (catId) => {
     setCollapsedCategories(prev => ({
@@ -991,6 +1000,189 @@ export default function App() {
     setWafToggling(null);
   };
 
+  // ===== Website Builder handlers =====
+  const loadGrapesJSAsets = () => {
+    return new Promise((resolve) => {
+      if (window.grapesjs) {
+        resolve();
+        return;
+      }
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/grapesjs/dist/css/grapes.min.css';
+      document.head.appendChild(link);
+
+      const presetLink = document.createElement('link');
+      presetLink.rel = 'stylesheet';
+      presetLink.href = 'https://unpkg.com/grapesjs-preset-webpage/dist/grapesjs-preset-webpage.min.css';
+      document.head.appendChild(presetLink);
+
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/grapesjs';
+      script.onload = () => {
+        const presetScript = document.createElement('script');
+        presetScript.src = 'https://unpkg.com/grapesjs-preset-webpage';
+        presetScript.onload = () => {
+          resolve();
+        };
+        document.body.appendChild(presetScript);
+      };
+      document.body.appendChild(script);
+    });
+  };
+
+  const initWebBuilder = async (domain) => {
+    if (!domain) return;
+    setWebBuilderLoading(true);
+    setWebBuilderDomain(domain);
+    
+    // Destroy previous editor if any
+    if (editorInstance) {
+      try {
+        editorInstance.destroy();
+      } catch (err) { console.error(err); }
+      setEditorInstance(null);
+    }
+
+    try {
+      await loadGrapesJSAsets();
+
+      // Read draft data if exists
+      let draftData = '';
+      try {
+        const res = await apiFetch(`/api/files/read?domain=${domain}&path=webbuilder_draft.json`);
+        if (res && res.ok) {
+          draftData = await res.text();
+        }
+      } catch (err) {
+        console.log('No draft found, starting fresh:', err);
+      }
+
+      // Clear editor target div
+      const targetDiv = document.getElementById('gjs');
+      if (targetDiv) {
+        targetDiv.innerHTML = '';
+      }
+
+      // Initialize grapesjs
+      const editor = window.grapesjs.init({
+        container: '#gjs',
+        height: '65vh',
+        width: '100%',
+        fromElement: false,
+        storageManager: false,
+        plugins: ['gjs-preset-webpage'],
+        pluginsOpts: {
+          'gjs-preset-webpage': {}
+        }
+      });
+
+      if (draftData) {
+        try {
+          editor.loadProjectData(JSON.parse(draftData));
+        } catch (err) {
+          console.error('Error parsing draft data:', err);
+        }
+      } else {
+        editor.setComponents(`
+          <section style="padding: 60px 20px; text-align: center; font-family: system-ui, -apple-system, sans-serif; background-color: #f8fafc; border-radius: 12px; margin: 20px;">
+            <h1 style="font-size: 3.5rem; color: #0f172a; font-weight: 800; letter-spacing: -0.025em; margin-bottom: 16px; line-height: 1;">Welcome to Your Web Page</h1>
+            <p style="font-size: 1.25rem; color: #475569; max-width: 600px; margin: 0 auto 32px; line-height: 1.625;">This responsive page was built instantly using the Aether Drag-and-Drop Editor. Start dragging blocks from the right pane to design your layout.</p>
+            <a href="#" style="background-color: #ea580c; color: white; text-decoration: none; padding: 14px 28px; font-size: 0.875rem; border-radius: 9999px; font-weight: 700; display: inline-block; box-shadow: 0 4px 6px -1px rgba(234, 88, 12, 0.2); transition: all 0.2s;">Discover More</a>
+          </section>
+        `);
+      }
+
+      setEditorInstance(editor);
+    } catch (err) {
+      console.error('Failed to initialize editor:', err);
+      alert('Failed to load website builder library. Check internet connection.');
+    }
+    setWebBuilderLoading(false);
+  };
+
+  const handleSaveDraft = async () => {
+    if (!editorInstance || !webBuilderDomain) return;
+    setWebBuilderSaving(true);
+    try {
+      const projectData = editorInstance.getProjectData();
+      const res = await apiFetch('/api/files/write', {
+        method: 'POST',
+        body: JSON.stringify({
+          domain: webBuilderDomain,
+          path: 'webbuilder_draft.json',
+          content: JSON.stringify(projectData)
+        })
+      });
+      if (res && res.ok) {
+        alert('Draft saved successfully.');
+      } else {
+        alert('Failed to save draft.');
+      }
+    } catch (err) {
+      console.error('Error saving draft:', err);
+      alert('Error saving draft.');
+    }
+    setWebBuilderSaving(false);
+  };
+
+  const handlePublishSite = async () => {
+    if (!editorInstance || !webBuilderDomain) return;
+    if (!window.confirm('WARNING: Publishing will compile your layout and completely overwrite your website\'s public/index.html. Are you sure?')) return;
+    
+    setWebBuilderPublishing(true);
+    try {
+      const html = editorInstance.getHtml();
+      const css = editorInstance.getCss();
+
+      const combinedHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Published Site - ${webBuilderDomain}</title>
+  <style>
+    ${css}
+  </style>
+</head>
+<body>
+  ${html}
+</body>
+</html>`;
+
+      // Save draft first
+      const projectData = editorInstance.getProjectData();
+      await apiFetch('/api/files/write', {
+        method: 'POST',
+        body: JSON.stringify({
+          domain: webBuilderDomain,
+          path: 'webbuilder_draft.json',
+          content: JSON.stringify(projectData)
+        })
+      });
+
+      // Write compiled index.html
+      const res = await apiFetch('/api/files/write', {
+        method: 'POST',
+        body: JSON.stringify({
+          domain: webBuilderDomain,
+          path: 'public/index.html',
+          content: combinedHTML
+        })
+      });
+
+      if (res && res.ok) {
+        alert(`Website published successfully to ${webBuilderDomain}!`);
+      } else {
+        alert('Failed to publish site.');
+      }
+    } catch (err) {
+      console.error('Error publishing site:', err);
+      alert('Error publishing site.');
+    }
+    setWebBuilderPublishing(false);
+  };
+
   // ===== MultiPHP INI Editor handlers =====
   const fetchPHPSettings = async (domain) => {
     if (!domain) return;
@@ -1321,6 +1513,24 @@ export default function App() {
           icon: (
             <svg className="w-8 h-8 text-[#ff2d20]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 9.75L16.5 12l-2.25 2.25m-4.5 0L7.5 12l2.25-2.25M6 20.25h12a2.25 2.25 0 002.25-2.25V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
+            </svg>
+          )
+        },
+        {
+          name: 'Website Builder',
+          desc: 'Drag-and-Drop visual layout editor and site publisher',
+          action: () => {
+            setShowWebBuilderModal(true);
+            if (sites.length > 0 && !webBuilderDomain) {
+              setWebBuilderDomain(sites[0].domain);
+              initWebBuilder(sites[0].domain);
+            } else if (webBuilderDomain) {
+              initWebBuilder(webBuilderDomain);
+            }
+          },
+          icon: (
+            <svg className="w-8 h-8 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25A2.25 2.25 0 0113.5 8.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
             </svg>
           )
         }
@@ -3099,6 +3309,95 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ============ Drag-and-Drop Website Builder Modal ============ */}
+      {showWebBuilderModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs flex flex-col z-50 p-4">
+          {/* Header Panel */}
+          <div className="bg-white border border-slate-200 rounded-t-xl px-6 py-4 flex flex-wrap items-center justify-between shadow-md space-y-2 sm:space-y-0">
+            <div className="flex items-center space-x-3">
+              <button 
+                onClick={() => {
+                  if (editorInstance) {
+                    try { editorInstance.destroy(); } catch (err) { console.error(err); }
+                    setEditorInstance(null);
+                  }
+                  setShowWebBuilderModal(false);
+                }} 
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg transition cursor-pointer"
+              >
+                ← Back
+              </button>
+              <div className="h-5 w-px bg-slate-200" />
+              <div className="flex items-center space-x-2">
+                <svg className="w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25A2.25 2.25 0 0113.5 8.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+                </svg>
+                <span className="font-extrabold text-sm text-slate-800 uppercase tracking-wider">Aether Site Builder</span>
+              </div>
+              <span className="bg-indigo-100 text-indigo-800 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">GrapesJS Editor</span>
+            </div>
+
+            {/* Controls */}
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Target Domain:</span>
+                <select
+                  value={webBuilderDomain}
+                  onChange={e => {
+                    setWebBuilderDomain(e.target.value);
+                    initWebBuilder(e.target.value);
+                  }}
+                  className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none"
+                >
+                  {sites.map(s => <option key={s.domain} value={s.domain}>{s.domain}</option>)}
+                </select>
+              </div>
+
+              <div className="h-5 w-px bg-slate-200" />
+
+              <button
+                onClick={handleSaveDraft}
+                disabled={webBuilderSaving || webBuilderLoading}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-200 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center space-x-1 cursor-pointer"
+              >
+                {webBuilderSaving ? (
+                  <>
+                    <span className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent mr-1" />
+                    <span>Saving...</span>
+                  </>
+                ) : 'Save Draft'}
+              </button>
+
+              <button
+                onClick={handlePublishSite}
+                disabled={webBuilderPublishing || webBuilderLoading}
+                className="px-5 py-2 bg-orange-600 hover:bg-orange-500 disabled:bg-slate-200 text-white font-bold text-xs rounded-lg shadow-md transition flex items-center space-x-1 cursor-pointer"
+              >
+                {webBuilderPublishing ? (
+                  <>
+                    <span className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent mr-1" />
+                    <span>Publishing...</span>
+                  </>
+                ) : 'Publish Website'}
+              </button>
+            </div>
+          </div>
+
+          {/* Builder Canvas Area */}
+          <div className="flex-1 bg-slate-100 border-x border-b border-slate-200 rounded-b-xl overflow-hidden relative min-h-0">
+            {webBuilderLoading ? (
+              <div className="absolute inset-0 bg-white/80 backdrop-blur-xs flex flex-col items-center justify-center space-y-3 z-50">
+                <span className="animate-spin rounded-full h-8 w-8 border-4 border-indigo-600 border-t-transparent" />
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Loading Builder Assets...</span>
+              </div>
+            ) : null}
+            
+            {/* GrapesJS editor mount node */}
+            <div id="gjs" className="h-full w-full" />
           </div>
         </div>
       )}
