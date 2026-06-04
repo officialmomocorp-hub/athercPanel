@@ -129,6 +129,19 @@ export default function App() {
   const [backupConfigSaving, setBackupConfigSaving] = useState(false);
   const [backupKeyConfigured, setBackupKeyConfigured] = useState(false);
 
+  // Security Center state
+  const [showSecurityCenterModal, setShowSecurityCenterModal] = useState(false);
+  const [securityActiveTab, setSecurityActiveTab] = useState('waf');
+  const [fail2banJails, setFail2banJails] = useState([]);
+  const [fail2banLoading, setFail2banLoading] = useState(false);
+  const [scanHistory, setScanHistory] = useState([]);
+  const [scanHistoryLoading, setScanHistoryLoading] = useState(false);
+  const [scanStatus, setScanStatus] = useState(null);
+  const [scanningDomain, setScanningDomain] = useState('');
+  const [scanActionLoading, setScanActionLoading] = useState(false);
+  const [wafToggling, setWafToggling] = useState(null);
+
+
   const toggleCategoryCollapse = (catId) => {
     setCollapsedCategories(prev => ({
       ...prev,
@@ -873,6 +886,111 @@ export default function App() {
     } catch (err) { console.error(err); }
   };
 
+  // ===== Security Center handlers =====
+  const fetchFail2banStatus = async () => {
+    setFail2banLoading(true);
+    try {
+      const res = await apiFetch('/api/security/fail2ban');
+      if (res && res.ok) {
+        const data = await res.json();
+        setFail2banJails(data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch Fail2ban status:', err);
+    }
+    setFail2banLoading(false);
+  };
+
+  const handleFail2banUnban = async (jail, ip) => {
+    if (!window.confirm(`Are you sure you want to unban IP ${ip} from jail ${jail}?`)) return;
+    try {
+      const res = await apiFetch('/api/security/fail2ban/unban', {
+        method: 'POST',
+        body: JSON.stringify({ jail, ip })
+      });
+      if (res && res.ok) {
+        alert(`Successfully unbanned IP ${ip}`);
+        await fetchFail2banStatus();
+      } else {
+        alert('Failed to unban IP');
+      }
+    } catch (err) {
+      console.error('Error unbanning IP:', err);
+    }
+  };
+
+  const fetchScanHistory = async () => {
+    setScanHistoryLoading(true);
+    try {
+      const res = await apiFetch('/api/security/scan/history');
+      if (res && res.ok) {
+        const data = await res.json();
+        setScanHistory(data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch scan history:', err);
+    }
+    setScanHistoryLoading(false);
+  };
+
+  const fetchScanStatus = async () => {
+    try {
+      const res = await apiFetch('/api/security/scan/status');
+      if (res && res.ok) {
+        const data = await res.json();
+        setScanStatus(data);
+        if (data.running) {
+          setTimeout(fetchScanStatus, 3000);
+        } else {
+          await fetchScanHistory();
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch scan status:', err);
+    }
+  };
+
+  const handleStartScan = async (e) => {
+    e.preventDefault();
+    if (!scanningDomain) return;
+    setScanActionLoading(true);
+    try {
+      const res = await apiFetch('/api/security/scan', {
+        method: 'POST',
+        body: JSON.stringify({ domain: scanningDomain })
+      });
+      if (res && res.ok) {
+        alert(`Malware scan triggered for ${scanningDomain}`);
+        setTimeout(fetchScanStatus, 1000);
+      } else if (res && res.status === 409) {
+        alert('A malware scan is already running.');
+      } else {
+        alert('Failed to start scan.');
+      }
+    } catch (err) {
+      console.error('Error starting scan:', err);
+    }
+    setScanActionLoading(false);
+  };
+
+  const handleToggleWAF = async (domain, enabled) => {
+    setWafToggling(domain);
+    try {
+      const res = await apiFetch('/api/waf/toggle', {
+        method: 'POST',
+        body: JSON.stringify({ domain, enabled })
+      });
+      if (res && res.ok) {
+        await fetchSites();
+      } else {
+        alert('Failed to update WAF settings.');
+      }
+    } catch (err) {
+      console.error('Error toggling WAF:', err);
+    }
+    setWafToggling(null);
+  };
+
   // ===== MultiPHP INI Editor handlers =====
   const fetchPHPSettings = async (domain) => {
     if (!domain) return;
@@ -1140,6 +1258,23 @@ export default function App() {
           icon: (
             <svg className="w-8 h-8 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          )
+        },
+        {
+          name: 'Security Center',
+          desc: 'Manage ModSecurity WAF, Malware Scanner, and Fail2ban Jails',
+          action: () => {
+            setShowSecurityCenterModal(true);
+            fetchFail2banStatus();
+            fetchScanHistory();
+            if (sites.length > 0 && !scanningDomain) {
+              setScanningDomain(sites[0].domain);
+            }
+          },
+          icon: (
+            <svg className="w-8 h-8 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.75h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
             </svg>
           )
         }
@@ -2681,6 +2816,223 @@ export default function App() {
                 </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ============ SECURITY CENTER MODAL ============ */}
+      {showSecurityCenterModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-6">
+          <div className="bg-white border border-slate-200 rounded-xl max-w-4xl w-full p-8 shadow-2xl relative flex flex-col max-h-[85vh]">
+            <button onClick={() => setShowSecurityCenterModal(false)} className="absolute top-6 right-6 text-slate-400 hover:text-slate-700 text-sm font-bold">X</button>
+            
+            <div className="flex items-center space-x-3 mb-1">
+              <svg className="w-6 h-6 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.75h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+              </svg>
+              <h2 className="text-lg font-black text-slate-800">Security Center</h2>
+            </div>
+            <p className="text-xs text-slate-500 mb-6 font-medium">Protect your websites against exploits, scan files for malicious code, and monitor firewall brute-force prevention.</p>
+
+            {/* Tabs Navigation */}
+            <div className="flex space-x-2 border-b border-slate-200 mb-6">
+              {[
+                { id: 'waf', label: 'Web Application Firewall (WAF)' },
+                { id: 'malware', label: 'Malware Scanner' },
+                { id: 'fail2ban', label: 'Intrusion Prevention (IPS)' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setSecurityActiveTab(tab.id)}
+                  className={`px-4 py-2 text-xs font-bold -mb-px border-b-2 transition-colors ${securityActiveTab === tab.id ? 'border-orange-600 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content container */}
+            <div className="flex-1 overflow-y-auto min-h-0 space-y-4">
+              
+              {/* ============ TAB: WAF ============ */}
+              {securityActiveTab === 'waf' && (
+                <div className="space-y-4">
+                  <div className="bg-orange-50 border border-orange-100 rounded-lg p-4 text-xs text-orange-800 font-medium font-semibold">
+                    🛡️ ModSecurity & OWASP CRS Enabled: ModSecurity inspects HTTP requests and automatically blocks SQL injection, XSS, and local file inclusions. Toggle per-site below.
+                  </div>
+
+                  <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-xs">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                          <th className="px-5 py-3">Domain</th>
+                          <th className="px-5 py-3">Ruleset</th>
+                          <th className="px-5 py-3">WAF Engine</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-700">
+                        {sites.length === 0 ? (
+                          <tr>
+                            <td colSpan="3" className="px-5 py-8 text-center text-slate-400">No websites created yet. Create a website to manage its WAF settings.</td>
+                          </tr>
+                        ) : (
+                          sites.map(site => (
+                            <tr key={site.domain} className="hover:bg-slate-50">
+                              <td className="px-5 py-4 font-mono text-slate-900">{site.domain}</td>
+                              <td className="px-5 py-4 text-slate-500">OWASP CRS v3.3 (Paranoia 1)</td>
+                              <td className="px-5 py-4">
+                                <button
+                                  onClick={() => handleToggleWAF(site.domain, !site.wafEnabled)}
+                                  disabled={wafToggling === site.domain}
+                                  className={`relative w-11 h-5 rounded-full transition-colors flex items-center ${site.wafEnabled ? 'bg-orange-500' : 'bg-slate-300'}`}
+                                >
+                                  <span className={`absolute bg-white w-4 h-4 rounded-full shadow transition-transform ${site.wafEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* ============ TAB: MALWARE ============ */}
+              {securityActiveTab === 'malware' && (
+                <div className="space-y-6">
+                  {/* Scan trigger */}
+                  <form onSubmit={handleStartScan} className="bg-slate-50 border border-slate-200 rounded-lg p-5 flex items-end space-x-4">
+                    <div className="flex-1">
+                      <label className="text-[10px] text-slate-500 block font-bold uppercase tracking-wider mb-1">Select Domain to Scan</label>
+                      <select
+                        value={scanningDomain}
+                        onChange={e => setScanningDomain(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-orange-500 font-semibold"
+                      >
+                        <option value="">-- Select Domain --</option>
+                        {sites.map(s => <option key={s.domain} value={s.domain}>{s.domain}</option>)}
+                      </select>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={scanActionLoading || !scanningDomain || (scanStatus && scanStatus.running)}
+                      className="px-5 py-2 bg-orange-600 hover:bg-orange-500 disabled:bg-slate-300 text-white font-bold text-xs rounded-lg shadow-sm transition"
+                    >
+                      {scanActionLoading ? 'Starting...' : 'Run Scan'}
+                    </button>
+                  </form>
+
+                  {/* Active Scan Status */}
+                  {scanStatus && (scanStatus.running || scanStatus.message) && (
+                    <div className={`border rounded-lg p-5 ${scanStatus.running ? 'bg-sky-50 border-sky-100 text-sky-800' : scanStatus.result === 'clean' ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : scanStatus.result === 'infected' ? 'bg-rose-50 border-rose-100 text-rose-800' : 'bg-slate-50 border-slate-100 text-slate-700'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs font-black uppercase tracking-wider">Current Scan Status</div>
+                        {scanStatus.running && (
+                          <div className="flex items-center space-x-2">
+                            <span className="animate-spin rounded-full h-3 w-3 border-2 border-sky-600 border-t-transparent" />
+                            <span className="text-[10px] font-bold">Scanning...</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="font-semibold text-xs leading-relaxed">{scanStatus.message}</div>
+                    </div>
+                  )}
+
+                  {/* Scan History */}
+                  <div>
+                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-wider mb-2">Scan History & Reports</h3>
+                    <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-xs">
+                      {scanHistoryLoading ? (
+                        <div className="text-xs text-slate-400 py-8 text-center">Loading scan history...</div>
+                      ) : scanHistory.length === 0 ? (
+                        <div className="text-xs text-slate-400 py-8 text-center">No scans executed yet. Run a scan above to audit your site files.</div>
+                      ) : (
+                        <div className="divide-y divide-slate-100">
+                          {scanHistory.map((report, i) => (
+                            <div key={i} className="p-4 hover:bg-slate-50">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="font-bold text-xs text-slate-800 flex items-center space-x-2">
+                                  <span className="font-mono text-orange-600">{report.scanId}</span>
+                                  <span className="text-slate-300">|</span>
+                                  <span className="text-[10px] text-slate-400">{report.started}</span>
+                                </div>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${report.totalHits > 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                  {report.totalHits > 0 ? `${report.totalHits} Malware Found` : 'Clean'}
+                                </span>
+                              </div>
+                              
+                              <div className="grid grid-cols-4 gap-2 text-[10px] font-bold text-slate-500 uppercase">
+                                <div>Path: <span className="font-mono font-medium text-slate-700 normal-case">{report.path}</span></div>
+                                <div>Files: <span className="font-medium text-slate-700">{report.totalFiles}</span></div>
+                                <div>Elapsed: <span className="font-medium text-slate-700">{report.elapsed}</span></div>
+                                <div>Cleaned: <span className="font-medium text-slate-700">{report.totalCleaned}</span></div>
+                              </div>
+
+                              {report.hits && report.hits.length > 0 && (
+                                <div className="mt-3 bg-rose-50/50 border border-rose-100/50 rounded p-3 font-mono text-[10px] text-rose-800 max-h-32 overflow-y-auto space-y-1">
+                                  <div className="font-bold uppercase mb-1">Infected Files:</div>
+                                  {report.hits.map((hit, idx) => <div key={idx}>⚠️ {hit}</div>)}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ============ TAB: FAIL2BAN ============ */}
+              {securityActiveTab === 'fail2ban' && (
+                <div className="space-y-6">
+                  <div className="bg-sky-50 border border-sky-100 rounded-lg p-4 text-xs text-sky-800 font-medium">
+                    🛡️ Fail2ban Intrusion Prevention Active: Monitor active brute-force bans. Banned IPs are automatically rejected by firewall rules until unbanned.
+                  </div>
+
+                  {fail2banLoading ? (
+                    <div className="text-xs text-slate-400 py-8 text-center">Loading Fail2ban jails...</div>
+                  ) : fail2banJails.length === 0 ? (
+                    <div className="text-xs text-slate-400 py-8 text-center bg-slate-50 rounded-lg border border-slate-200">No active Fail2ban jails discovered. Check system logs.</div>
+                  ) : (
+                    fail2banJails.map(jail => (
+                      <div key={jail.name} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-xs">
+                        <div className="bg-slate-50 border-b border-slate-200 px-5 py-3 flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-bold text-xs text-slate-800">Jail: <span className="font-mono text-orange-600">{jail.name}</span></span>
+                            <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">{jail.currentlyBanned} banned</span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 font-bold uppercase">Total history bans: {jail.totalBanned}</span>
+                        </div>
+                        
+                        <div className="p-5">
+                          <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">Currently Banned IPs</h4>
+                          {jail.bannedIps.length === 0 ? (
+                            <div className="text-xs text-slate-400 py-3 text-center bg-slate-50 rounded-lg border border-slate-200">No IPs currently banned in this jail.</div>
+                          ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                              {jail.bannedIps.map(ip => (
+                                <div key={ip} className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs">
+                                  <span className="font-mono text-slate-700 font-bold">{ip}</span>
+                                  <button
+                                    onClick={() => handleFail2banUnban(jail.name, ip)}
+                                    className="text-[10px] text-rose-600 hover:text-rose-800 font-black uppercase tracking-wider cursor-pointer"
+                                  >
+                                    Unban
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+            </div>
           </div>
         </div>
       )}

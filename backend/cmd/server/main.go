@@ -252,6 +252,7 @@ type Site struct {
 	PHPVersion   string `json:"phpVersion"`
 	RedisEnabled bool   `json:"redisEnabled"`
 	SSLActive    bool   `json:"sslActive"`
+	WAFEnabled   bool   `json:"wafEnabled"`
 	Bandwidth    string `json:"bandwidth"`
 }
 
@@ -762,6 +763,11 @@ func rebuildNginxConfig(domain string) error {
 `, path, htpasswdPath, site.PHPVersion, domain))
 	}
 
+	var wafBlock string
+	if site.WAFEnabled {
+		wafBlock = "\n    modsecurity on;\n    modsecurity_rules_file /etc/nginx/modsecurity_includes.conf;\n"
+	}
+
 	var nginxConfig string
 	if site.SSLActive {
 		nginxConfig = fmt.Sprintf(`server {
@@ -783,7 +789,7 @@ server {
     error_log /var/log/nginx/%s.error.log;
 
     include snippets/phpmyadmin.conf;
-%s
+%s%s
     location / {
         try_files $uri $uri/ /index.php?$args;
     }
@@ -792,7 +798,7 @@ server {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php%s-fpm-%s.sock;
     }
-}`, domain, domain, localWebRoot, domain, domain, domain, domain, privacyBlocks.String(), site.PHPVersion, domain)
+}`, domain, domain, localWebRoot, domain, domain, domain, domain, privacyBlocks.String(), wafBlock, site.PHPVersion, domain)
 	} else {
 		nginxConfig = fmt.Sprintf(`server {
     listen 80;
@@ -804,7 +810,7 @@ server {
     error_log /var/log/nginx/%s.error.log;
 
     include snippets/phpmyadmin.conf;
-%s
+%s%s
     location / {
         try_files $uri $uri/ /index.php?$args;
     }
@@ -813,7 +819,7 @@ server {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php%s-fpm-%s.sock;
     }
-}`, domain, localWebRoot, domain, domain, privacyBlocks.String(), site.PHPVersion, domain)
+}`, domain, localWebRoot, domain, domain, privacyBlocks.String(), wafBlock, site.PHPVersion, domain)
 	}
 
 	nginxPath := fmt.Sprintf("/etc/nginx/sites-available/%s", domain)
@@ -1888,6 +1894,429 @@ func handleSavePHPSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
 
+type ScanReport struct {
+	ScanID       string   `json:"scanId"`
+	Started      string   `json:"started"`
+	Completed    string   `json:"completed"`
+	Elapsed      string   `json:"elapsed"`
+	Path         string   `json:"path"`
+	TotalFiles   int      `json:"totalFiles"`
+	TotalHits    int      `json:"totalHits"`
+	TotalCleaned int      `json:"totalCleaned"`
+	Hits         []string `json:"hits,omitempty"`
+}
+
+type JailInfo struct {
+	Name            string   `json:"name"`
+	CurrentlyBanned int      `json:"currentlyBanned"`
+	TotalBanned     int      `json:"totalBanned"`
+	BannedIPs       []string `json:"bannedIps"`
+}
+
+var (
+	scanMutex   sync.Mutex
+	scanRunning bool
+	scanDomain  string
+	scanMessage string
+	scanResult  string
+)
+
+func loadScanHistory() ([]ScanReport, error) {
+	var history []ScanReport
+	files, err := filepath.Glob("/usr/local/maldetect/sess/session.[0-9]*")
+	if err != nil {
+		return nil, err
+	}
+
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(data), "\n")
+		var report ScanReport
+
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "SCAN ID:") {
+				report.ScanID = strings.TrimSpace(strings.TrimPrefix(line, "SCAN ID:"))
+			} else if strings.HasPrefix(line, "STARTED:") {
+				report.Started = strings.TrimSpace(strings.TrimPrefix(line, "STARTED:"))
+			} else if strings.HasPrefix(line, "COMPLETED:") {
+				report.Completed = strings.TrimSpace(strings.TrimPrefix(line, "COMPLETED:"))
+			} else if strings.HasPrefix(line, "ELAPSED:") {
+				report.Elapsed = strings.TrimSpace(strings.TrimPrefix(line, "ELAPSED:"))
+			} else if strings.HasPrefix(line, "PATH:") {
+				report.Path = strings.TrimSpace(strings.TrimPrefix(line, "PATH:"))
+			} else if strings.HasPrefix(line, "TOTAL FILES:") {
+				val, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "TOTAL FILES:")))
+				report.TotalFiles = val
+			} else if strings.HasPrefix(line, "TOTAL HITS:") {
+				val, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "TOTAL HITS:")))
+				report.TotalHits = val
+			} else if strings.HasPrefix(line, "TOTAL CLEANED:") {
+				val, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "TOTAL CLEANED:")))
+				report.TotalCleaned = val
+			}
+		}
+
+		if report.TotalHits > 0 && report.ScanID != "" {
+			hitsFile := fmt.Sprintf("/usr/local/maldetect/sess/session.hits.%s", report.ScanID)
+			if hData, err := os.ReadFile(hitsFile); err == nil {
+				hLines := strings.Split(string(hData), "\n")
+				for _, hl := range hLines {
+					hl = strings.TrimSpace(hl)
+					if hl != "" {
+						report.Hits = append(report.Hits, hl)
+					}
+				}
+			}
+		}
+
+		if report.ScanID != "" {
+			history = append(history, report)
+		}
+	}
+
+	// Sort descending by reversing
+	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+		history[i], history[j] = history[j], history[i]
+	}
+
+	return history, nil
+}
+
+func getFail2banStatus() ([]JailInfo, error) {
+	cmd := exec.Command("fail2ban-client", "status")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run fail2ban-client status: %v. Output: %s", err, string(output))
+	}
+
+	var jails []string
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Jail list:") {
+			parts := strings.Split(line, "Jail list:")
+			if len(parts) > 1 {
+				jailStr := strings.ReplaceAll(parts[1], "\t", " ")
+				jailStr = strings.ReplaceAll(jailStr, ",", " ")
+				for _, j := range strings.Fields(jailStr) {
+					j = strings.TrimSpace(j)
+					if j != "" {
+						jails = append(jails, j)
+					}
+				}
+			}
+		}
+	}
+
+	var jailInfos []JailInfo
+	for _, jailName := range jails {
+		jCmd := exec.Command("fail2ban-client", "status", jailName)
+		jOut, err := jCmd.CombinedOutput()
+		if err != nil {
+			continue
+		}
+
+		info := JailInfo{Name: jailName, BannedIPs: []string{}}
+		jLines := strings.Split(string(jOut), "\n")
+		for _, jl := range jLines {
+			jl = strings.TrimSpace(jl)
+			if strings.Contains(jl, "Currently banned:") {
+				parts := strings.Split(jl, "Currently banned:")
+				if len(parts) > 1 {
+					val, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+					info.CurrentlyBanned = val
+				}
+			} else if strings.Contains(jl, "Total banned:") {
+				parts := strings.Split(jl, "Total banned:")
+				if len(parts) > 1 {
+					val, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+					info.TotalBanned = val
+				}
+			} else if strings.Contains(jl, "Banned IP list:") {
+				parts := strings.Split(jl, "Banned IP list:")
+				if len(parts) > 1 {
+					ips := strings.Fields(parts[1])
+					for _, ip := range ips {
+						ip = strings.TrimSpace(ip)
+						if ip != "" {
+							info.BannedIPs = append(info.BannedIPs, ip)
+						}
+					}
+				}
+			}
+		}
+		jailInfos = append(jailInfos, info)
+	}
+
+	return jailInfos, nil
+}
+
+func unbanIP(jail, ip string) error {
+	jailRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	ipRegex := regexp.MustCompile(`^[a-fA-F0-9.:]+$`)
+	if !jailRegex.MatchString(jail) || !ipRegex.MatchString(ip) {
+		return fmt.Errorf("invalid jail or IP format")
+	}
+
+	cmd := exec.Command("fail2ban-client", "set", jail, "unbanip", ip)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("fail2ban unban failed: %v. Output: %s", err, string(output))
+	}
+	return nil
+}
+
+func handleToggleWAF(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Domain  string `json:"domain"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	list := loadSites()
+	for i, s := range list {
+		if s.Domain == body.Domain {
+			list[i].WAFEnabled = body.Enabled
+			break
+		}
+	}
+	saveSites(list)
+
+	err := rebuildNginxConfig(body.Domain)
+	if err != nil {
+		http.Error(w, "Failed to rebuild nginx config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+func handleSecurityScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if body.Domain == "" {
+		http.Error(w, "domain is required", http.StatusBadRequest)
+		return
+	}
+	if !domainRegex.MatchString(body.Domain) {
+		http.Error(w, "invalid domain format", http.StatusBadRequest)
+		return
+	}
+
+	scanMutex.Lock()
+	if scanRunning {
+		scanMutex.Unlock()
+		http.Error(w, "Malware scan is already running", http.StatusConflict)
+		return
+	}
+	scanRunning = true
+	scanDomain = body.Domain
+	scanMessage = "Initializing malware scan..."
+	scanResult = "running"
+	scanMutex.Unlock()
+
+	go func(domain string) {
+		defer func() {
+			scanMutex.Lock()
+			scanRunning = false
+			scanMutex.Unlock()
+		}()
+
+		scanPath := fmt.Sprintf("/var/www/vhosts/%s/public", domain)
+		if _, err := os.Stat(scanPath); os.IsNotExist(err) {
+			scanMutex.Lock()
+			scanResult = "error"
+			scanMessage = fmt.Sprintf("Domain directory does not exist: %s", scanPath)
+			scanMutex.Unlock()
+			return
+		}
+
+		scanMutex.Lock()
+		scanMessage = fmt.Sprintf("Scanning directory %s with Linux Malware Detect...", scanPath)
+		scanMutex.Unlock()
+
+		cmd := exec.Command("maldet", "-a", scanPath)
+		output, err := cmd.CombinedOutput()
+
+		scanMutex.Lock()
+		defer scanMutex.Unlock()
+
+		if err != nil {
+			scanResult = "error"
+			scanMessage = fmt.Sprintf("Scan execution failed: %v. Output: %s", err, string(output))
+			return
+		}
+
+		outStr := string(output)
+		if strings.Contains(outStr, "no malware hits found") || strings.Contains(outStr, "hits: 0") || strings.Contains(outStr, "malware hits 0") {
+			scanResult = "clean"
+			scanMessage = "Scan completed successfully. No malware detected."
+		} else {
+			scanResult = "infected"
+			reReport := regexp.MustCompile(`(?:maldet --report|report ID:|SCAN ID:)\s+([0-9a-zA-Z.-]+)`)
+			reportMatch := reReport.FindStringSubmatch(outStr)
+			reportID := ""
+			if len(reportMatch) > 1 {
+				reportID = reportMatch[1]
+			}
+			if reportID != "" {
+				scanMessage = fmt.Sprintf("Scan completed. Threats detected! Report ID: %s.", reportID)
+			} else {
+				scanMessage = "Scan completed. Threats detected! Please review logs."
+			}
+		}
+	}(body.Domain)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "processing", "message": "Malware scan started in background"})
+}
+
+func handleGetScanStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	scanMutex.Lock()
+	running := scanRunning
+	domain := scanDomain
+	msg := scanMessage
+	res := scanResult
+	scanMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"running": running,
+		"domain":  domain,
+		"message": msg,
+		"result":  res,
+	})
+}
+
+func handleGetScanHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	history, err := loadScanHistory()
+	if err != nil {
+		http.Error(w, "Failed to load scan history: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
+}
+
+func handleFail2banStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	jails, err := getFail2banStatus()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(jails)
+}
+
+func handleFail2banUnban(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Jail string `json:"jail"`
+		IP   string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	err := unbanIP(body.Jail, body.IP)
+	if err != nil {
+		http.Error(w, "Failed to unban IP: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
 func main() {
 	initCredentials()
 
@@ -1948,6 +2377,14 @@ func main() {
 	mux.HandleFunc("/api/db/remote/ip/add", authMiddleware(handleDBRemoteIPAdd))
 	mux.HandleFunc("/api/db/remote/ip/remove", authMiddleware(handleDBRemoteIPRemove))
 	mux.HandleFunc("/api/db/pma-session", authMiddleware(handlePMASession))
+
+	// Security Center endpoints
+	mux.HandleFunc("/api/waf/toggle", authMiddleware(handleToggleWAF))
+	mux.HandleFunc("/api/security/scan", authMiddleware(handleSecurityScan))
+	mux.HandleFunc("/api/security/scan/status", authMiddleware(handleGetScanStatus))
+	mux.HandleFunc("/api/security/scan/history", authMiddleware(handleGetScanHistory))
+	mux.HandleFunc("/api/security/fail2ban", authMiddleware(handleFail2banStatus))
+	mux.HandleFunc("/api/security/fail2ban/unban", authMiddleware(handleFail2banUnban))
 
 	// Static assets handler (React dashboard compilation output)
 	mux.Handle("/", http.FileServer(http.Dir("./frontend/dist")))
