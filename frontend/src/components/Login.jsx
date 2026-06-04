@@ -19,7 +19,7 @@ export default function Login({ onLoginSuccess }) {
     };
   }, []);
 
-  // HTML5 Interactive Canvas Premium Neon Galaxy Constellation Background
+  // HTML5 Interactive Canvas Premium Flow-Field Galaxy Vortex Background
   useEffect(() => {
     const canvas = document.getElementById('login-canvas');
     if (!canvas) return;
@@ -37,25 +37,33 @@ export default function Login({ onLoginSuccess }) {
     let lastSpawnTime = 0;
     let time = 0;
 
+    // Shockwave states
+    let shockwaveX = 0;
+    let shockwaveY = 0;
+    let shockwaveRadius = 0;
+    let shockwaveActive = false;
+    const shockwaveMaxRadius = Math.max(width, height) * 0.5;
+
     const dynamicParticles = [];
     const ambientParticles = [];
     
     // Premium neon sci-fi color palette
     const colors = ["#6366f1", "#a855f7", "#3b82f6", "#06b6d4", "#ec4899", "#14b8a6", "#f43f5e", "#10b981"];
 
-    // Initialize 25 ambient particles with twinkling values
+    // Initialize 60 ambient particles with twinkling and wave offset values
     const initAmbientParticles = () => {
       ambientParticles.length = 0;
-      for (let i = 0; i < 25; i++) {
+      for (let i = 0; i < 60; i++) {
         ambientParticles.push({
           x: Math.random() * width,
           y: Math.random() * height,
-          vx: (Math.random() - 0.5) * 0.35,
-          vy: (Math.random() - 0.5) * 0.35,
-          size: Math.random() * 2 + 1.2,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: (Math.random() - 0.5) * 0.5,
+          size: Math.random() * 2 + 1.0,
           color: colors[i % colors.length],
           phase: Math.random() * Math.PI * 2,
-          twinkleSpeed: 0.01 + Math.random() * 0.02
+          twinkleSpeed: 0.01 + Math.random() * 0.02,
+          waveOffset: Math.random() * 100
         });
       }
     };
@@ -67,42 +75,48 @@ export default function Login({ onLoginSuccess }) {
       targetMouseY = e.clientY;
       isMouseActive = true;
 
-      // Rate limit spawning of cursor trail particles (max one per 14ms to maintain 60fps)
+      // Rate limit spawning of cursor trail particles (max one per 12ms to maintain 60fps)
       const now = Date.now();
-      if (now - lastSpawnTime > 14) {
+      if (now - lastSpawnTime > 12) {
         dynamicParticles.push({
           x: targetMouseX,
           y: targetMouseY,
-          vx: (Math.random() - 0.5) * 2.0,
-          vy: (Math.random() - 0.5) * 2.0 - 0.5, // Gentle upward drift
-          size: Math.random() * 3.5 + 2.0,
+          vx: (Math.random() - 0.5) * 1.5,
+          vy: (Math.random() - 0.5) * 1.5 - 0.3,
+          size: Math.random() * 3.2 + 1.8,
           color: colors[Math.floor(Math.random() * colors.length)],
           life: 80,
           maxLife: 80
         });
 
         // Cap dynamic particles to prevent lag
-        if (dynamicParticles.length > 80) {
+        if (dynamicParticles.length > 90) {
           dynamicParticles.shift();
         }
         lastSpawnTime = now;
       }
     };
 
-    const handleMouseDown = () => {
-      // Spawn dynamic radial burst on click
-      for (let i = 0; i < 25; i++) {
+    const handleMouseDown = (e) => {
+      // Trigger physical shockwave push
+      shockwaveX = e.clientX || targetMouseX;
+      shockwaveY = e.clientY || targetMouseY;
+      shockwaveRadius = 0;
+      shockwaveActive = true;
+
+      // Spawn dynamic explosion of particles
+      for (let i = 0; i < 30; i++) {
         const angle = Math.random() * Math.PI * 2;
-        const speed = Math.random() * 5.0 + 2.5;
+        const speed = Math.random() * 6.5 + 3.0;
         dynamicParticles.push({
-          x: targetMouseX,
-          y: targetMouseY,
+          x: shockwaveX,
+          y: shockwaveY,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
-          size: Math.random() * 4.0 + 2.5,
+          size: Math.random() * 3.8 + 2.0,
           color: colors[Math.floor(Math.random() * colors.length)],
-          life: 70,
-          maxLife: 70
+          life: 75,
+          maxLife: 75
         });
       }
     };
@@ -138,46 +152,86 @@ export default function Login({ onLoginSuccess }) {
 
     const animate = () => {
       time++;
-      // Clear screen fully to prevent old line accumulation
-      ctx.clearRect(0, 0, width, height);
+      
+      // Beautiful glassmorphism fade trail effect (creates motion blur)
+      ctx.fillStyle = 'rgba(7, 9, 17, 0.16)';
+      ctx.fillRect(0, 0, width, height);
 
       // Smooth easing follow for the mouse coordinate center
-      mouseX += (targetMouseX - mouseX) * 0.12;
-      mouseY += (targetMouseY - mouseY) * 0.12;
+      mouseX += (targetMouseX - mouseX) * 0.10;
+      mouseY += (targetMouseY - mouseY) * 0.10;
 
-      // Draw subtle dynamic radial spotlight backdrop centered at the mouse
+      // Color-cycling spotlight halo behind the cursor
       if (isMouseActive) {
-        const glowRad = ctx.createRadialGradient(mouseX, mouseY, 0, mouseX, mouseY, 280);
-        glowRad.addColorStop(0, 'rgba(99, 102, 241, 0.09)'); // Indigo core
-        glowRad.addColorStop(0.4, 'rgba(168, 85, 247, 0.04)'); // Violet mid
+        const hue = (time * 0.35) % 360;
+        const glowRad = ctx.createRadialGradient(mouseX, mouseY, 0, mouseX, mouseY, 300);
+        glowRad.addColorStop(0, `hsla(${hue}, 85%, 60%, 0.11)`); // Shifting core color
+        glowRad.addColorStop(0.5, `hsla(${(hue + 60) % 360}, 85%, 55%, 0.04)`); // Shifting outer halo
         glowRad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.fillStyle = glowRad;
-        ctx.globalAlpha = 1.0;
         ctx.fillRect(0, 0, width, height);
       }
 
-      // 1. Update and draw ambient twinkling stars
+      // Propagate click physical shockwave
+      if (shockwaveActive) {
+        shockwaveRadius += 14;
+        
+        // Draw the visual ripple expanding circle outline
+        ctx.beginPath();
+        ctx.arc(shockwaveX, shockwaveY, shockwaveRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(168, 85, 247, ${Math.max(0, 1 - (shockwaveRadius / shockwaveMaxRadius)) * 0.18})`;
+        ctx.lineWidth = 2.0;
+        ctx.stroke();
+
+        if (shockwaveRadius > shockwaveMaxRadius) {
+          shockwaveActive = false;
+        }
+      }
+
+      // Combine both particle arrays for connection and force calculations
+      const allParticles = [...ambientParticles, ...dynamicParticles];
+
+      // Update and draw ambient twinkling & drifting stars
       for (let i = 0; i < ambientParticles.length; i++) {
         const ap = ambientParticles[i];
         
-        // Gentle gravity pull toward cursor when nearby
+        // 1. Flow Field wavy drift force
+        const flowAngle = (ap.y * 0.006 + time * 0.008 + ap.waveOffset) % (Math.PI * 2);
+        ap.vx += Math.sin(flowAngle) * 0.06;
+        ap.vy += Math.cos(flowAngle) * 0.04;
+
+        // 2. Gravitational Vortex swirler around cursor
         if (isMouseActive) {
           const dx = mouseX - ap.x;
           const dy = mouseY - ap.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 250) {
-            const pull = (1 - dist / 250) * 0.12;
-            ap.vx += (dx / dist) * pull;
-            ap.vy += (dy / dist) * pull;
+          if (dist < 260) {
+            const pull = (1 - dist / 260) * 0.22;
+            const spin = (1 - dist / 260) * 0.38;
+            ap.vx += (dx / dist) * pull - (dy / dist) * spin;
+            ap.vy += (dy / dist) * pull + (dx / dist) * spin;
+          }
+        }
+
+        // 3. Shockwave push force
+        if (shockwaveActive) {
+          const dx = ap.x - shockwaveX;
+          const dy = ap.y - shockwaveY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const diff = Math.abs(dist - shockwaveRadius);
+          if (diff < 25 && dist > 10) {
+            const push = (1 - diff / 25) * 9.5;
+            ap.vx += (dx / dist) * push;
+            ap.vy += (dy / dist) * push;
           }
         }
 
         ap.x += ap.vx;
         ap.y += ap.vy;
 
-        // Apply friction to pull speeds
-        ap.vx *= 0.97;
-        ap.vy *= 0.97;
+        // Friction/drag
+        ap.vx *= 0.94;
+        ap.vy *= 0.94;
 
         // Wrap around screen edges
         if (ap.x < 0) ap.x = width;
@@ -185,8 +239,8 @@ export default function Login({ onLoginSuccess }) {
         if (ap.y < 0) ap.y = height;
         if (ap.y > height) ap.y = 0;
 
-        // Twinkle effect (sinusoidal scaling of opacity)
-        const twinkleAlpha = 0.15 + (Math.sin(time * ap.twinkleSpeed + ap.phase) + 1) * 0.2;
+        // Sinusoidal Twinkle alpha modulation
+        const twinkleAlpha = 0.15 + (Math.sin(time * ap.twinkleSpeed + ap.phase) + 1) * 0.25;
 
         ctx.beginPath();
         ctx.arc(ap.x, ap.y, ap.size, 0, Math.PI * 2);
@@ -195,27 +249,41 @@ export default function Login({ onLoginSuccess }) {
         ctx.fill();
       }
 
-      // 2. Update, fade, and draw dynamic trail particles
+      // Update, fade, and draw dynamic trail particles
       for (let i = dynamicParticles.length - 1; i >= 0; i--) {
         const dp = dynamicParticles[i];
         
-        // Gravitational attraction toward mouse
+        // 1. Vortex swirl physics
         if (isMouseActive) {
           const dx = mouseX - dp.x;
           const dy = mouseY - dp.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist < 220) {
-            const pull = (1 - dist / 220) * 0.18;
-            dp.vx += (dx / dist) * pull;
-            dp.vy += (dy / dist) * pull;
+            const pull = (1 - dist / 220) * 0.28;
+            const spin = (1 - dist / 220) * 0.45;
+            dp.vx += (dx / dist) * pull - (dy / dist) * spin;
+            dp.vy += (dy / dist) * pull + (dx / dist) * spin;
+          }
+        }
+
+        // 2. Shockwave push force
+        if (shockwaveActive) {
+          const dx = dp.x - shockwaveX;
+          const dy = dp.y - shockwaveY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const diff = Math.abs(dist - shockwaveRadius);
+          if (diff < 25 && dist > 10) {
+            const push = (1 - diff / 25) * 9.5;
+            dp.vx += (dx / dist) * push;
+            dp.vy += (dy / dist) * push;
           }
         }
 
         dp.x += dp.vx;
         dp.y += dp.vy;
         
-        dp.vx *= 0.96;
-        dp.vy *= 0.96;
+        dp.vx *= 0.94;
+        dp.vy *= 0.94;
         
         dp.life--;
 
@@ -229,26 +297,23 @@ export default function Login({ onLoginSuccess }) {
         ctx.beginPath();
         ctx.arc(dp.x, dp.y, dp.size * alpha, 0, Math.PI * 2);
         ctx.fillStyle = dp.color;
-        ctx.globalAlpha = alpha * 0.85;
+        ctx.globalAlpha = alpha * 0.9;
         
-        // Soft neon glow effect for larger dynamic stars
-        if (dp.size > 3.5) {
-          ctx.shadowBlur = 12;
+        // Drop neon shadow glow for dynamic nodes
+        if (dp.size > 3.0) {
+          ctx.shadowBlur = 14;
           ctx.shadowColor = dp.color;
         }
         ctx.fill();
-        ctx.shadowBlur = 0; // reset shadow
+        ctx.shadowBlur = 0; // reset
       }
 
-      // Combine both particle arrays for connection rendering
-      const allParticles = [...ambientParticles, ...dynamicParticles];
-
-      // 3. Draw linear gradient connecting lines (Constellation web)
+      // 4. Draw connecting lines (Linear gradient color blending)
       for (let i = 0; i < allParticles.length; i++) {
         const p1 = allParticles[i];
         const a1 = p1.life !== undefined ? p1.life / p1.maxLife : 0.6;
 
-        // Connect particles to each other
+        // Connect nodes to each other
         for (let j = i + 1; j < allParticles.length; j++) {
           const p2 = allParticles[j];
           const a2 = p2.life !== undefined ? p2.life / p2.maxLife : 0.6;
@@ -256,13 +321,12 @@ export default function Login({ onLoginSuccess }) {
           const dy = p1.y - p2.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
-          if (dist < 95) {
-            const lineAlpha = (1 - dist / 95) * 0.10 * Math.min(a1, a2);
+          if (dist < 90) {
+            const lineAlpha = (1 - dist / 90) * 0.12 * Math.min(a1, a2);
             ctx.beginPath();
             ctx.moveTo(p1.x, p1.y);
             ctx.lineTo(p2.x, p2.y);
             
-            // Draw connection using a linear gradient between the two particle colors
             const grad = ctx.createLinearGradient(p1.x, p1.y, p2.x, p2.y);
             grad.addColorStop(0, p1.color);
             grad.addColorStop(1, p2.color);
@@ -274,31 +338,31 @@ export default function Login({ onLoginSuccess }) {
           }
         }
 
-        // Connect nearby particles to cursor center (when mouse is active)
+        // Connect nearby nodes to pointer center
         if (isMouseActive) {
           const dx = p1.x - mouseX;
           const dy = p1.y - mouseY;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
           if (dist < 140) {
-            const lineAlpha = (1 - dist / 140) * 0.15 * a1;
+            const lineAlpha = (1 - dist / 140) * 0.18 * a1;
             ctx.beginPath();
             ctx.moveTo(p1.x, p1.y);
             ctx.lineTo(mouseX, mouseY);
             
             const grad = ctx.createLinearGradient(p1.x, p1.y, mouseX, mouseY);
             grad.addColorStop(0, p1.color);
-            grad.addColorStop(1, "#ffffff"); // Fades smoothly to white core
+            grad.addColorStop(1, "#ffffff");
             ctx.strokeStyle = grad;
 
             ctx.globalAlpha = lineAlpha;
-            ctx.lineWidth = 0.85;
+            ctx.lineWidth = 0.9;
             ctx.stroke();
           }
         }
       }
 
-      ctx.globalAlpha = 1.0; // Reset canvas opacity
+      ctx.globalAlpha = 1.0;
       animationFrameId = requestAnimationFrame(animate);
     };
 
