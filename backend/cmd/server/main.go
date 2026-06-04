@@ -2361,6 +2361,7 @@ func main() {
 	mux.HandleFunc("/api/services/control", authMiddleware(handleServiceControl))
 	mux.HandleFunc("/api/install", authMiddleware(handleInstallApp))
 	mux.HandleFunc("/api/uninstall", authMiddleware(handleUninstallApp))
+	mux.HandleFunc("/api/templates/install", authMiddleware(handleInstallTemplate))
 	mux.HandleFunc("/api/config/read", authMiddleware(handleConfigRead))
 	mux.HandleFunc("/api/config/write", authMiddleware(handleConfigWrite))
 
@@ -3608,6 +3609,219 @@ require_once ABSPATH . 'wp-settings.php';
 		"jobId":   jobID,
 		"status":  "processing",
 		"message": "App installation worker running in background",
+	})
+}
+
+// handleInstallTemplate handles 1-Click installations for pre-configured website templates.
+func handleInstallTemplate(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Domain   string `json:"domain"`
+		Template string `json:"template"` // "ecommerce" or "informative"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !domainRegex.MatchString(body.Domain) {
+		http.Error(w, "Invalid domain format", http.StatusBadRequest)
+		return
+	}
+
+	if body.Template != "ecommerce" && body.Template != "informative" {
+		http.Error(w, "Unsupported template type. Only ecommerce and informative are supported.", http.StatusBadRequest)
+		return
+	}
+
+	// Verify domain exists in our database
+	sites := loadSites()
+	siteExists := false
+	for _, s := range sites {
+		if s.Domain == body.Domain {
+			siteExists = true
+			break
+		}
+	}
+	if !siteExists {
+		http.Error(w, "Domain does not exist in Aether Panel", http.StatusBadRequest)
+		return
+	}
+
+	jobID := uuid.New().String()
+	log.Printf("[Template Install Job %s] Initializing %s template on %s", jobID, body.Template, body.Domain)
+	setJobStatus(jobID, body.Domain, "pending", "Job queued")
+
+	go func(id, domain, template string) {
+		dbName := strings.ReplaceAll(domain, ".", "_")
+		dbName = strings.ReplaceAll(dbName, "-", "_")
+		if len(dbName) > 30 {
+			dbName = dbName[:30]
+		}
+		dbName = dbName + "_db"
+
+		dbUser := strings.ReplaceAll(domain, ".", "_")
+		dbUser = strings.ReplaceAll(dbUser, "-", "_")
+		if len(dbUser) > 16 {
+			dbUser = dbUser[:16]
+		}
+		dbUser = dbUser + "_usr"
+		dbPass := uuid.New().String()[:16]
+
+		setJobStatus(id, domain, "processing", "Provisioning MySQL database...")
+		createSQL := fmt.Sprintf(
+			"CREATE DATABASE IF NOT EXISTS `%s`; CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s'; ALTER USER '%s'@'localhost' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost'; CREATE USER IF NOT EXISTS '%s'@'127.0.0.1' IDENTIFIED BY '%s'; ALTER USER '%s'@'127.0.0.1' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'127.0.0.1'; FLUSH PRIVILEGES;",
+			dbName, dbUser, dbPass, dbUser, dbPass, dbName, dbUser,
+			dbUser, dbPass, dbUser, dbPass, dbName, dbUser,
+		)
+		dbCmd := exec.Command("mysql", "-u", "root", "-e", createSQL)
+		if err := dbCmd.Run(); err != nil {
+			setJobStatus(id, domain, "failed", "Database creation failed: "+err.Error())
+			return
+		}
+		addDatabaseMetadata(dbName, dbUser, dbPass)
+
+		publicDir := fmt.Sprintf("/var/www/vhosts/%s/public", domain)
+		siteDir := fmt.Sprintf("/var/www/vhosts/%s", domain)
+		
+		setJobStatus(id, domain, "processing", "Cleaning target directory...")
+		_ = os.RemoveAll(publicDir)
+		_ = os.MkdirAll(publicDir, 0755)
+
+		archivePath := fmt.Sprintf("/var/www/templates/%s.tar.gz", template)
+		
+		// If archive does not exist, build WordPress dynamically (Vanguard Fallback)
+		if _, err := os.Stat(archivePath); os.IsNotExist(err) {
+			setJobStatus(id, domain, "processing", "Building WordPress dynamically (Fallback)...")
+			_ = exec.Command("wp", "core", "download", "--path="+publicDir, "--allow-root").Run()
+			wpConfig := fmt.Sprintf(`<?php
+define( 'DB_NAME', '%s' );
+define( 'DB_USER', '%s' );
+define( 'DB_PASSWORD', '%s' );
+define( 'DB_HOST', '127.0.0.1' );
+define( 'DB_CHARSET', 'utf8' );
+define( 'DB_COLLATE', '' );
+define( 'AUTH_KEY',         '%s' );
+define( 'SECURE_AUTH_KEY',  '%s' );
+define( 'LOGGED_IN_KEY',    '%s' );
+define( 'NONCE_KEY',        '%s' );
+define( 'AUTH_SALT',        '%s' );
+define( 'SECURE_AUTH_SALT', '%s' );
+define( 'LOGGED_IN_SALT',   '%s' );
+define( 'NONCE_SALT',       '%s' );
+$table_prefix = 'wp_';
+define( 'WP_DEBUG', false );
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', __DIR__ . '/' );
+}
+require_once ABSPATH . 'wp-settings.php';
+`, dbName, dbUser, dbPass,
+				uuid.New().String(), uuid.New().String(), uuid.New().String(), uuid.New().String(),
+				uuid.New().String(), uuid.New().String(), uuid.New().String(), uuid.New().String())
+			_ = os.WriteFile(filepath.Join(publicDir, "wp-config.php"), []byte(wpConfig), 0644)
+
+			_ = exec.Command("wp", "core", "install", "--url=http://"+domain, "--title="+domain, "--admin_user=admin", "--admin_password=adminpass", "--admin_email=admin@"+domain, "--allow-root", "--path="+publicDir).Run()
+			_ = exec.Command("wp", "theme", "install", "astra", "--activate", "--allow-root", "--path="+publicDir).Run()
+			_ = exec.Command("wp", "plugin", "install", "elementor", "astra-sites", "--activate", "--allow-root", "--path="+publicDir).Run()
+			if template == "ecommerce" {
+				_ = exec.Command("wp", "plugin", "install", "woocommerce", "--activate", "--allow-root", "--path="+publicDir).Run()
+			}
+		} else {
+			setJobStatus(id, domain, "processing", "Extracting template files...")
+			extractCmd := exec.Command("tar", "-xzf", archivePath, "-C", publicDir)
+			if err := extractCmd.Run(); err != nil {
+				setJobStatus(id, domain, "failed", "Template extraction failed: "+err.Error())
+				return
+			}
+
+			setJobStatus(id, domain, "processing", "Importing template database...")
+			sqlPath := filepath.Join(publicDir, "db_dump.sql")
+			importCmd := exec.Command("mysql", "-u", "root", dbName, "-e", fmt.Sprintf("source %s", sqlPath))
+			if err := importCmd.Run(); err != nil {
+				setJobStatus(id, domain, "failed", "Database import failed: "+err.Error())
+				return
+			}
+			_ = os.Remove(sqlPath)
+
+			setJobStatus(id, domain, "processing", "Configuring wp-config.php...")
+			wpConfig := fmt.Sprintf(`<?php
+define( 'DB_NAME', '%s' );
+define( 'DB_USER', '%s' );
+define( 'DB_PASSWORD', '%s' );
+define( 'DB_HOST', '127.0.0.1' );
+define( 'DB_CHARSET', 'utf8' );
+define( 'DB_COLLATE', '' );
+define( 'AUTH_KEY',         '%s' );
+define( 'SECURE_AUTH_KEY',  '%s' );
+define( 'LOGGED_IN_KEY',    '%s' );
+define( 'NONCE_KEY',        '%s' );
+define( 'AUTH_SALT',        '%s' );
+define( 'SECURE_AUTH_SALT', '%s' );
+define( 'LOGGED_IN_SALT',   '%s' );
+define( 'NONCE_SALT',       '%s' );
+$table_prefix = 'wp_';
+define( 'WP_DEBUG', false );
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', __DIR__ . '/' );
+}
+require_once ABSPATH . 'wp-settings.php';
+`, dbName, dbUser, dbPass,
+				uuid.New().String(), uuid.New().String(), uuid.New().String(), uuid.New().String(),
+				uuid.New().String(), uuid.New().String(), uuid.New().String(), uuid.New().String())
+			_ = os.WriteFile(filepath.Join(publicDir, "wp-config.php"), []byte(wpConfig), 0644)
+
+			setJobStatus(id, domain, "processing", "Rewriting template URLs...")
+			protocol := "http"
+			for _, s := range loadSites() {
+				if s.Domain == domain && s.SSLActive {
+					protocol = "https"
+					break
+				}
+			}
+			targetURL := fmt.Sprintf("%s://%s", protocol, domain)
+			sourceURL := "informative-template.local"
+			if template == "ecommerce" {
+				sourceURL = "ecommerce-template.local"
+			}
+
+			// Replace with protocol first to clean up explicit http/https links
+			srCmd1 := exec.Command("wp", "search-replace", "https://"+sourceURL, targetURL, "--all-tables", "--allow-root")
+			srCmd1.Dir = publicDir
+			_ = srCmd1.Run()
+
+			srCmd2 := exec.Command("wp", "search-replace", "http://"+sourceURL, targetURL, "--all-tables", "--allow-root")
+			srCmd2.Dir = publicDir
+			_ = srCmd2.Run()
+
+			// Replace any remaining raw domains
+			srCmd3 := exec.Command("wp", "search-replace", sourceURL, domain, "--all-tables", "--allow-root")
+			srCmd3.Dir = publicDir
+			_ = srCmd3.Run()
+		}
+
+		setJobStatus(id, domain, "processing", "Finalizing permissions...")
+		chownCmd := exec.Command("chown", "-R", fmt.Sprintf("%s:%s", domain, domain), siteDir)
+		_ = chownCmd.Run()
+
+		setJobStatus(id, domain, "completed", "Template website installed successfully!")
+	}(jobID, body.Domain, body.Template)
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"jobId":   jobID,
+		"status":  "processing",
+		"message": "Template installation running in background",
 	})
 }
 
